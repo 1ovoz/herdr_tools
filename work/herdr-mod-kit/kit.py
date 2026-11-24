@@ -16,11 +16,12 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parent
-VERSION = '1.4.0'
+VERSION = '1.5.0'
 FEATURES = ('usage', 'transfer', 'pdf', 'tabs')
 MODS = {'usage':'herdr-kit-usage', 'transfer':'herdr-kit-files', 'pdf':'herdr-kit-pdf', 'tabs':'herdr-kit-pane'}
 TABS_MOD = 'herdr-kit-tabs'
 LINKS_MOD = 'herdr-kit-links'
+VERSION_MOD = 'herdr-kit-version'
 NATIVE_DEPS = {
     'usage': (MODS['usage'],),
     'transfer': (MODS['transfer'],),
@@ -143,22 +144,29 @@ def make_layout(base, features):
             raise KitError('tabs_header_structure_changed: default layout needs a Pane header')
         for header in headers:
             header['mod']=MODS['tabs']
-    if 'usage' in selected:
+    if selected:
         hosts = [(node,index) for node in nodes(base) for index,child in enumerate(node.get('children',[]))
                  if child.get('id')=='status' and child.get('content',{}).get('mod')=='workspace-status']
         if len(hosts)!=1:
-            raise KitError('usage_structure_changed: default layout needs one workspace status block')
+            if 'usage' in selected:
+                raise KitError('usage_structure_changed: default layout needs one workspace status block')
+            return base
         parent,index=hosts[0]
         status=parent['children'][index]
         height=status.pop('size',{'px':28})
         status['size']={'weight':1}
-        usage={'id':'herdr-kit-usage','type':'block','size':{'px':510},'min':400,'content':{'mod':MODS['usage']}}
-        parent['children'][index]={'id':'herdr-kit-status','type':'row','size':height,'resizable':False,'children':[status,usage]}
+        children=[status]
+        if 'usage' in selected:
+            children.append({'id':'herdr-kit-usage','type':'block','size':{'px':510},'min':400,'content':{'mod':MODS['usage']}})
+        children.append({'id':VERSION_MOD,'type':'block','size':{'px':70},
+                         'content':{'mod':VERSION_MOD,'props':{'version':VERSION}}})
+        parent['children'][index]={'id':'herdr-kit-status','type':'row','size':height,'resizable':False,'children':children}
     return base
 
 
 def enabled_mods(features):
-    return tuple(dict.fromkeys(mod for feature in features for mod in NATIVE_DEPS[feature]))
+    mods=tuple(dict.fromkeys(mod for feature in features for mod in NATIVE_DEPS[feature]))
+    return (*mods,VERSION_MOD) if mods else ()
 
 
 def invoke(exe, args, app_home, timeout=25):
@@ -366,7 +374,7 @@ def install_locked(options, home, app, core):
                     shutil.copyfile(ROOT/'common'/name,dest/name)
             staged_targets.update({p.relative_to(stage).as_posix():p for p in dest.rglob('*') if p.is_file()})
             ok,code=native_check(app,home,dest,verbose=True)
-            owners=[feature for feature in features if mod in NATIVE_DEPS[feature]]
+            owners=[feature for feature in features if mod in NATIVE_DEPS[feature]] or ['installer']
             for owner in owners:
                 record(home,owner,f'install_native_check.{mod}',code)
             if not ok:
@@ -467,6 +475,15 @@ def diagnose(options, home, app):
         print('[installer]')
         print_recent(log_dir/'installer.jsonl')
     failed=False
+    if active and state.get('version')==VERSION:
+        ok,code=native_check(app,home,home/'mods'/VERSION_MOD,options.verbose) if app else (False,'app_missing')
+        for name in ('mod.json','main.js'):
+            key=f'mods/{VERSION_MOD}/{name}'
+            expected=state.get('files',{}).get(key)
+            if not expected or hash_file(home/key)!=expected:
+                ok,code=False,'file_changed_or_missing'
+        print(f'[installer] {VERSION_MOD}={code}')
+        failed=not ok
     for feature in chosen:
         mod=MODS[feature]
         if feature not in active:

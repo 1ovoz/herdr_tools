@@ -33,6 +33,8 @@ for folder in (files, pdf, tabs, usage, pane):
     folder.mkdir(parents=True, exist_ok=True)
     write(folder / "mod.json", '{"place":"none"}\n')
 
+shutil.copytree(work/"kit-version",kit/"mods"/"herdr-kit-version",dirs_exist_ok=True)
+
 main = read(source / "main.js")
 button = main[main.index("  button(id, label"):main.index("  renderMenu() {")]
 files_main = adapt(
@@ -190,39 +192,16 @@ shutil.copy2(source / "file_host.py",common / "file_host.py")
 usage_main = adapt(
     read(work / "lab-usage" / "main.js"),
     ('lab-weekly-usage', 'herdr-kit-usage'),
-    ('    cx.spawn(async cx => {\n      try {',
-     '''    cx.spawn(async cx => {
-      let cfg, previous;
-      try {
-        cfg = JSON.parse(await readTextFile(`${appHome()}/data/herdr-mod-kit/helpers/runtime.json`));'''),
-    ('        const previous=shared(USAGE_KEY);\n        const providers=',
-     '        const stored=shared(USAGE_KEY);\n        previous=stored?.host===cfg.machine?stored:null;\n        const providers='),
-    ('exec("python3", ["-c", source,...providers], { on: "lab", timeout: 25000 })',
-     'exec(cfg.machine ? "python3" : cfg.python, ["-X", "utf8", "-c", source,...providers], { on: cfg.machine, timeout: 25000 })'),
-    ('this.snapshot = {...value,claude:',
-     '''for (const provider of providers) {
-          const item = value[provider];
-          this.logResult(cfg, provider, item.code || (item.error ? "usage_unavailable" : "ok"));
-        }
-        this.snapshot = {...value,host:cfg.machine,claude:'''),
-    ('      } catch {\n        const previous=shared(USAGE_KEY);',
-     '      } catch {\n        this.logResult(cfg, "collector", "collector_unreachable");'),
-    ('{ at: Date.now() / 1000, codex:', '{ at: Date.now() / 1000, host:cfg?.machine, codex:'),
-    ('Check lab connection', 'Check usage host'),
-    ('  render() {', '''  logResult(cfg, provider, code) {
-    this.reported ??= {};
-    if (this.reported[provider] === code) return;
-    this.reported[provider] = code;
+    ('return {machine:"lab", python:"python3"};',
+     'return JSON.parse(await readTextFile(`${appHome()}/data/herdr-mod-kit/helpers/runtime.json`));'),
+    ('    if (code !== "ok") console.error(`[${MOD}] ${provider} ${code}`);', '''    this.reported ??= {};
+    const key = cacheKey(provider, host);
+    if (this.reported[key] === code) return;
+    this.reported[key] = code;
     const fallback = () => console.error(`[herdr-kit/usage] ${provider} ${code}`);
-    if (!cfg?.python) { fallback(); return; }
     const home = appHome();
-    exec(cfg.python, ["-X", "utf8", `${home}/data/herdr-mod-kit/helpers/kit_log.py`, home, "usage", provider, code], { timeout: 5000 })
-      .then(result => { if (result.code !== 0) fallback(); }, fallback);
-  }
-
-  render() {'''),
-    ('.child("lab · Usage")', '.child(data?.host ? `${data.host} · Usage` : "Usage")'),
-    ('Loading from lab…', 'Loading usage…'),
+    exec(this.config.python, ["-X", "utf8", `${home}/data/herdr-mod-kit/helpers/kit_log.py`, home, "usage", provider, code], {on:null, timeout:5000})
+      .then(result => { if (result.code !== 0) fallback(); }, fallback);'''),
 )
 write(usage / "main.js", usage_main)
 shutil.copy2(work / "lab-usage" / "codex.svg", usage / "codex.svg")

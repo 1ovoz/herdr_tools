@@ -4,9 +4,9 @@ Windows용 Herdr에서 파일을 옮기고 PDF와 코드를 나란히 읽으며 
 
 ## Windows 설치 및 업데이트
 
-[Windows x64 설치 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Windows-x64-v1.4.0.zip) · [개발 인계 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Dev-v1.4.0.zip) · [SHA-256](outputs/SHA256SUMS)
+[Windows x64 설치 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Windows-x64-v1.5.0.zip) · [개발 인계 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Dev-v1.5.0.zip) · [SHA-256](outputs/SHA256SUMS)
 
-Herdr 데스크톱 0.1.17과 Windows x64 Python 3.10 이상이 있는 PC에서 새 ZIP을 별도 폴더에 모두 풀고 `Herdr-Mod-Kit/Install-Windows.cmd`를 실행하세요. v1.0 설치를 먼저 제거할 필요가 없습니다. 업그레이드는 기존 기능 선택, 사용량 머신 및 키 설정을 보존합니다. 새 설치의 사용량 기본값은 `local`입니다. 설치 후 `Diagnose-Windows.cmd`로 확인할 수 있습니다.
+Herdr 데스크톱 0.1.17과 Windows x64 Python 3.10 이상이 있는 PC에서 새 ZIP을 별도 폴더에 모두 풀고 `Herdr-Mod-Kit/Install-Windows.cmd`를 실행하세요. v1.0 또는 v1.4.0이 설치된 PC에서도 같은 순서로 업데이트할 수 있습니다. 설치 후 하단바 오른쪽에 `mod 1.5.0`이 표시됩니다. 업그레이드는 기존 기능 선택, 사용량 머신 및 키 설정을 보존합니다. 새 설치의 사용량 기본값은 `local`입니다. 설치 후 `Diagnose-Windows.cmd`로 확인할 수 있습니다.
 
 직접 편집한 설치 파일과 새 파일이 충돌하면 설치기가 해당 경로를 표시하고 중단합니다. 수정본을 별도 위치에 보관하고 해당 경로를 비운 뒤 다시 실행하세요. 실행 중인 앱이 변경할 파일을 계속 잠그면 Herdr를 닫고 재실행하세요. SSH 머신 등록과 Windows의 기존 `main` 레이아웃은 이 설치기의 관리 대상 밖에 있습니다.
 
@@ -37,9 +37,13 @@ py -3 -X utf8 work/herdr-mod-kit/kit.py diagnose
 | 이름 바꾸기… | `F2` | 새 이름을 입력합니다. 같은 이름이 있으면 기존 파일을 보존합니다. |
 | 영구히 삭제 | `Del` | 대상 파일 경로를 확인하고 삭제 버튼을 눌러야 실행됩니다. |
 
-복사하거나 잘라낸 파일은 같은 머신의 폴더 행, 루트 드롭 영역 또는 트리 빈 곳에 붙여넣습니다. 붙여넣기 단축키는 `Ctrl+V`입니다. 이동은 같은 파일시스템에서 지원하며, 목적지에 같은 이름이 있으면 두 파일을 그대로 둡니다. 탐색기에서 파일을 끌어와 업로드하거나 Files 안에서 폴더로 드래그해 이동할 수도 있습니다.
+복사하거나 잘라낸 파일은 같은 머신의 폴더 행, 루트 드롭 영역 또는 트리 빈 곳에 붙여넣습니다. 붙여넣기 단축키는 `Ctrl+V`입니다. 이동은 같은 파일시스템에서 지원하며, 목적지에 같은 이름이 있으면 두 파일을 그대로 둡니다. 탐색기에서 파일을 끌어와 업로드하거나 Files 안에서 폴더로 드래그해 이동할 수도 있습니다. 파일을 끌면 포인터 옆에 파일명이 표시됩니다. 강조된 폴더 행이나 상단 루트 영역에서 마우스를 놓으면 그 위치로 이동합니다.
 
 ![README.md에 대한 Files 메뉴와 단축키](docs/screenshots/files-menu.png)
+
+검증용 탭에서 `README.md`를 `docs` 위로 끄는 상태를 재현한 화면입니다. 포인터 옆에는 파일명이, 받을 폴더에는 테두리가 표시됩니다.
+
+![README.md 파일명과 강조된 docs 폴더](docs/screenshots/files-drag.png)
 
 ## PDF·텍스트 분할과 탭
 
@@ -72,6 +76,12 @@ Windows x64 Herdr 0.1.17에서 v1.0과 v1.4.0에 같은 파일을 사용했습�
 
 ## Codex·Claude 사용량
 
-오른쪽 상태표시줄의 파란 막대를 누르면 Codex 주간 사용률과 초기화 시간을 볼 수 있습니다. 이 PC에서는 Windows의 로컬 Codex 계정으로 조회했습니다. Claude Code 로그인이 없는 상태도 그대로 표시됩니다. Claude 및 Fable의 실제 사용량은 이 PC에서 검증하지 않았습니다.
+하단바의 사용량 막대 → **Sources**에서 **Codex**와 **Claude Code**의 조회 머신을 각각 선택합니다. 예를 들어 Codex 열에서 **local**, Claude Code 열에서 **lab**을 선택하면 파란 막대는 Windows 계정의 사용량, Claude와 Fable 막대는 `lab`의 사용량을 표시합니다. **Install default**를 선택하면 해당 서비스는 설치 당시의 공통 머신 설정을 따릅니다.
+
+원격 목록에는 이 Herdr에 등록된 머신이 표시됩니다. `lab`이 없는 PC에서는 먼저 **Add machine**으로 기존 서버를 연결하세요. 조회 대상 머신에 Python과 해당 서비스의 CLI 로그인이 필요합니다. 로그인 정보는 해당 머신에서 읽고 사용량 결과만 돌려받습니다.
+
+아래는 원격 머신을 등록하기 전의 설정 화면입니다. 두 서비스는 현재 이 PC의 설치 기본값인 `local`을 사용합니다.
+
+![Codex와 Claude Code 각각의 조회 머신을 선택하는 Usage sources 팝업](docs/screenshots/usage-sources.png)
 
 ![Codex 주간 사용량과 Claude 로그인 상태가 표시된 실제 팝업](docs/screenshots/local-usage.png)

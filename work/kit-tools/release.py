@@ -2,10 +2,13 @@ from pathlib import Path
 import argparse
 import re
 import shutil
+import sys
 from zipfile import ZIP_DEFLATED, ZipFile
 
 workspace=Path(__file__).resolve().parents[2]
 kit=workspace/'work'/'herdr-mod-kit'
+sys.path.insert(0,str(kit))
+from kit import VERSION
 parser=argparse.ArgumentParser()
 parser.add_argument('--out-dir',type=Path,default=workspace/'outputs')
 outputs=parser.parse_args().out_dir
@@ -14,6 +17,7 @@ root_files=['kit.py','Install-Windows.cmd','Diagnose-Windows.cmd','README.md','A
             'licenses/Herdr-Apache-2.0.txt','common/actions.js','common/document-drag.js',
             'common/document-flow.js','common/bridge.py','common/file_host.py','common/kit_log.py','common/default-windows-keys.json']
 manifests={
+    'herdr-kit-version': ['mod.json','main.js'],
     'herdr-kit-usage': ['mod.json','main.js','collect.py','codex.svg'],
     'herdr-kit-files': ['mod.json','main.js'],
     'herdr-kit-pdf': ['mod.json','main.js','pdf-geometry.js'],
@@ -33,7 +37,7 @@ for p in selected:
     assert p.name not in {'runtime.json','auth.json','.credentials.json','shared.json','settings.json'},p
 assert any(p.name=='pdfium.dll' for p in selected)
 assert any('licenses' in p.parts and '.dist-info' in str(p) for p in selected)
-archive=outputs/'Herdr-Mod-Kit-Windows-x64-v1.4.0.zip'
+archive=outputs/f'Herdr-Mod-Kit-Windows-x64-v{VERSION}.zip'
 with ZipFile(archive,'w',compression=ZIP_DEFLATED,compresslevel=8) as zip_file:
     for p in sorted(selected):
         zip_file.write(p,'Herdr-Mod-Kit/'+p.relative_to(kit).as_posix())

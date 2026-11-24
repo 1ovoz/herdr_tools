@@ -139,31 +139,33 @@ export default class Files extends DocumentView {
     this.job(uploadRequests(paths, directory, on));
   }
 
-  trackFileDrag(event, folder, cx) {
+  trackFileDrag(event, cx) {
     const press = this.documentPress;
-    if (!press || (!this.fileDragged && !movement(press.point,event))) return false;
+    if (!press) return;
+    // A folder's mouse move bubbles here with the panel's own local coordinates.
+    const folder = press.hoverFolder ?? null;
+    press.hoverFolder = null;
+    if (!this.fileDragged && !movement(press.point,event)) return;
     this.fileDragged = true;
-    const target = folder === press.parent ? null : folder;
-    if (this.dropFolder !== target) {
-      this.dropFolder = target;
-      cx.notify();
-    }
-    return true;
+    if (!this.transfer) return;
+    this.dropFolder = folder === press.parent ? null : folder;
+    press.pointer = { ...event.local_position, width:event.bounds.width, height:event.bounds.height };
+    cx.notify();
   }
 
   clearFileDrag(cx) {
+    const visible = this.documentPress?.pointer;
     this.documentPress = null;
-    if (this.dropFolder !== null) {
-      this.dropFolder = null;
-      cx.notify();
-    }
+    this.dropFolder = null;
+    if (visible) cx.notify();
   }
 
   finishFileDrag(event, folder, cx) {
     const press = this.documentPress;
-    const dragged = this.trackFileDrag(event,folder,cx);
+    if (!press) return;
+    this.fileDragged ||= movement(press.point,event);
     this.clearFileDrag(cx);
-    if (!dragged) return;
+    if (!this.fileDragged) return;
     cx.stop_propagation();
     if (folder === null || folder === press.parent || !this.current(press.context)) return;
     const {source,on} = press.doc;
@@ -186,8 +188,24 @@ export default class Files extends DocumentView {
 
   fileDropTarget(el, folder, t) {
     return el.when(this.dropFolder === folder,target=>target.bg(t.selected).border_1().border_color(t.accent))
-      .on_mouse_move((event,cx)=>{if(this.trackFileDrag(event,folder,cx))cx.stop_propagation();})
+      .on_mouse_move(()=>{if (this.documentPress) this.documentPress.hoverFolder = folder;})
       .on_mouse_up("left",(event,cx)=>this.finishFileDrag(event,folder,cx));
+  }
+
+  fileDragLabel(press, t) {
+    const scale = Number(settings().zoom) || 1;
+    const point = press.pointer;
+    const x = point.x / scale, y = point.y / scale;
+    const width = point.width / scale, height = point.height / scale;
+    const leftHalf = x <= width / 2;
+    const below = height - y >= 38;
+    // Keep the label inside the panel and away from the pointer's hit target.
+    return div().id("file-drag-label").absolute().px(8).py(4).rounded(5).shadow_sm()
+      .max_w(Math.max(1,(leftHalf ? width - x : x) - 14)).truncate()
+      .when(leftHalf,el=>el.left(x + 10)).when(!leftHalf,el=>el.right(width - x + 10))
+      .when(below,el=>el.top(y + 10)).when(!below,el=>el.bottom(height - y + 10))
+      .border_1().border_color(t.accent).bg(t.popover).text_color(t.foreground).text_size(12)
+      .child(press.doc.name);
   }
 
   cancelDrop() {
@@ -584,7 +602,7 @@ export default class Files extends DocumentView {
       if (out.length >= TOTAL) break;
       const path = prefix ? `${prefix}/${entry.name}` : entry.name, open = this.folders.has(path), mark = this.marks[`${this.root}/${path}`];
       const target = menuTarget(root,on,path,entry.dir,entry.name);
-      out.push(h_flex().id(`file-${path}`).h(28).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().hover(s => s.bg(t.hover))
+      out.push(h_flex().id(`file-${path}`).h(28).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().hover(s => s.bg(this.dropFolder === path ? t.selected : t.hover))
         .when(this.selected?.source === target.source && this.selected?.on === on,el=>el.bg(t.selected))
         .on_click((_e, cx) => {
           if(this.fileDragged||this.root!==root||this.on!==on)return;
@@ -628,10 +646,17 @@ export default class Files extends DocumentView {
     const t = theme();
     const root=this.root,on=this.on,file=this.file;
     const rootTarget = root ? menuTarget(root,on,"",true,root) : null;
-    return v_flex().id("files").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
-      .on_mouse_move((event,cx)=>this.trackFileDrag(event,null,cx))
+    return v_flex().id("files").relative().size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
+      .on_mouse_move((event,cx)=>this.trackFileDrag(event,cx))
       .on_mouse_up("left",(event,cx)=>this.finishFileDrag(event,null,cx))
       .on_mouse_down_out((_event,cx)=>this.clearFileDrag(cx))
+      .on_key_down((event,cx)=>{
+        if (event.key === "escape" && this.documentPress) {
+          cx.stop_propagation();
+          this.fileDragged = true;
+          this.clearFileDrag(cx);
+        }
+      })
       .on_hover((hovered,cx)=>{
         if (hovered || !this.documentPress) return;
         const {doc,context} = this.documentPress;
@@ -658,6 +683,7 @@ export default class Files extends DocumentView {
         .children(this.rows("", 0, [], t))
         .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
         .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))))
-      .when(Boolean(this.file), el => el.child(this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(12).text_color(t.dim).child(this.fileError || "Loading file…")));
+      .when(Boolean(this.file), el => el.child(this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(12).text_color(t.dim).child(this.fileError || "Loading file…")))
+      .when(this.documentPress?.pointer,el=>el.child(this.fileDragLabel(this.documentPress,t)));
   }
 }

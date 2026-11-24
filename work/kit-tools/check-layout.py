@@ -26,5 +26,12 @@ for enabled in [(),('usage',),('transfer',),('pdf',),('tabs',),kit.FEATURES]:
              if node.get('content',{}).get('pane',{}).get('header',{}).get('content',{}).get('mod') in ('pane','herdr-kit-pane')]
     assert headers and all(name==('herdr-kit-pane' if 'tabs' in enabled else 'pane') for name in headers)
     assert nodes['status']['content']['mod']=='workspace-status'
+    if enabled:
+        version=nodes['herdr-kit-version']
+        assert version['content']=={'mod':'herdr-kit-version','props':{'version':kit.VERSION}}
+        assert nodes['herdr-kit-status']['children'][-1] is version
+        assert 'herdr-kit-version' in kit.enabled_mods(enabled)
+    else:
+        assert 'herdr-kit-version' not in nodes
 assert source==kit.read_json(base_layout)
 print('Layout checks passed for each feature alone, all, and none; source is intact')
