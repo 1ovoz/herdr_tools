@@ -1,0 +1,5 @@
+# Preserve the upstream Windows wheel byte-for-byte across Git checkouts.
+work/personal-files/vendor/** -text
+*.zip binary
+*.png binary
+*.pdf binary

@@ -1,0 +1,10 @@
+{
+  "place": "none",
+  "title": "Open document links in Herdr",
+  "link_handlers": [
+    {
+      "kind": "file",
+      "pattern": "(?i)(?:\\.(?:pdf|tex|bib|txt|md|markdown|rst|log|csv|tsv|jsonc?|ya?ml|toml|xml|html?|css|js|jsx|ts|tsx|py|rs|go|java|cpp|cc|c|h|hpp|sh|ps1|sql)|(?:^|[/\\\\])(?:Makefile|Dockerfile|README|LICENSE))(?:\\:\\d+){0,2}$"
+    }
+  ]
+}

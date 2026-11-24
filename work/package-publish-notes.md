@@ -1,0 +1,13 @@
+# Herdr packaging follow-up
+
+The distributed ZIP is updated only when the user asks for a package update. Changes tested in the live profile can stay pending for that release. Keep independently selectable features and feature-tagged logs. Put common helpers and shared dependencies together in the package when incorporating future changes.
+
+Public versioning started with `Herdr-Mod-Kit-Windows-x64-v1.0.zip`. The public filename is independent of the internal installer version used for upgrades.
+
+Released in Windows x64 1.1.0: drag-to-split for document tabs and Files, automatic file refresh, continuous PDF scrolling, the Claude Retry-After policy, and the compact usage bars. Shared code is bundled in `common/`, with per-feature diagnostics retained.
+
+Released in Windows x64 1.2.0: PDF and text link handling, splitting panes back into independent tabs, and a layout-scoped Ctrl+W. The installer logs the tabs feature separately and preserves existing Ctrl+W bindings.
+
+Windows x64 v1.0 (internal 1.3.0) includes both the Windows progress-file lock fix and dragging individual files onto another folder or the current root. Moves stay on the same host and filesystem and preserve both files on name conflicts.
+
+Windows x64 v1.4.0 includes the Files menu, pointer-anchored high-resolution PDF zoom, bounded previews and cache cleanup, and in-place upgrade checks for existing profiles. Omitted options preserve the selected features and usage host.

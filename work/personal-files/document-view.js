@@ -1,0 +1,426 @@
+import { View, div, image } from "gpui-kit";
+import { v_flex, h_flex, Editor, EditorState, TextView } from "gpui-base";
+import { theme, settings, props, checking, focused, panes, run, notify } from "herdr";
+import { bridge, jobId } from "./actions.js";
+import { hitChar, selectedText, selectionRects } from "./pdf-geometry.js";
+import { pageFlow, visiblePages, pageAt, restorePosition } from "./document-flow.js";
+import { documentPane, registerDocument, fileDocument, saveDocumentPosition } from "./document-drag.js";
+
+const modes = { ts:"js", tsx:"js", jsx:"js", ps1:"powershell", yml:"yaml", jsonc:"json", md:"markdown" };
+const POLL_MS = 2000;
+const MIN_ZOOM = 0.5, MAX_ZOOM = 2, ZOOM_STEP = 0.25;
+const PAGE_LEFT = 12;
+
+// Keep fenced code literal. Other blocks use native Markdown without embedded HTML or image requests.
+function markdownBlocks(source) {
+  const blocks=[], lines=[];
+  let marker="", language="";
+  function flush() {
+    const body=lines.join("\n");
+    lines.length=0;
+    if (!body.trim()) return;
+    if (marker) {
+      const longest=(body.match(/~+/g)||[]).reduce((n,s)=>Math.max(n,s.length),2);
+      const fence="~".repeat(longest+1);
+      blocks.push(fence+language+"\n"+body+"\n"+fence);
+    } else {
+      blocks.push(body.replace(/</g,"&lt;").replace(/!(?=\[)/g,"&#33;"));
+    }
+  }
+  for (const line of source.split(/\r?\n/)) {
+    const match=/^ {0,3}(\x60{3,}|~{3,})(.*)$/.exec(line);
+    if (match && !marker) {
+      flush(); marker=match[1]; language=/^[\w.+-]+$/.test(match[2].trim())?match[2].trim():"";
+    } else if (match && match[1][0]===marker[0] && match[1].length>=marker.length && !match[2].trim()) {
+      flush(); marker="";
+    } else lines.push(line);
+    if (blocks.length>=256) return [...blocks,"Preview limit reached. Select Source to keep reading."];
+  }
+  flush();
+  return blocks;
+}
+
+export class DocumentView extends View {
+  initDocument(cx) {
+    const p = props() || {};
+    this.document = { source:p.source, on:p.on ?? null, split:p.split, mode:p.mode };
+    this.documentId = p.id;
+    this.isPicture=/\.(?:png|jpe?g)$/i.test(p.source || "");
+    this.width = 850;
+    this.height = 720;
+    this.zoom = p.position?.zoom ?? 1;
+    this.pendingPosition = p.position;
+    this.scroll = { x:0, y:0 };
+    this.pages = new Map();
+    this.sizes = [];
+    this.requestVersion = 0;
+    this.renderingPage = false;
+    this.docFocus = cx.focus_handle();
+    if (checking() || !p.source) return;
+    this.checkForChanges(cx);
+    cx.timer.after(200,()=>{
+      this.capturePane();
+      if(this.viewerPane && p.source) {
+        registerDocument({...fileDocument(p.source,p.on??null),id:p.id,split:p.split,position:p.position},
+          this.viewerTab,this.viewerPane,p.anchorTab);
+      }
+    });
+    cx.timer.every(POLL_MS, tick => { if (this.isShown()) this.checkForChanges(tick); });
+  }
+
+  isShown() {
+    const id = focused()?.tab;
+    if (this.viewerTab) return id === this.viewerTab;
+    return true;
+  }
+
+  capturePane() {
+    const current = focused();
+    if (!current?.tab) return;
+    const placed=documentPane(this.documentId);
+    if (placed) {
+      this.viewerPane=placed;
+      this.viewerTab=panes().find(p=>p.pane===placed)?.tab||this.viewerTab;
+      return;
+    }
+    if(this.document.split && this.documentId) return;
+    const list = panes().filter(p => p.tab === current.tab);
+    if (!this.viewerPane && list.some(p => p.pane === current.pane && p.mod === "personal-files")) {
+      this.viewerPane = current.pane;
+      this.viewerTab = current.tab;
+    }
+  }
+
+  request(action, fields={}) {
+    const {source,on} = this.document;
+    return bridge({action,source,on,job:jobId(),...fields}).then(result => {
+      if (!result.ok) throw Object.assign(new Error(result.error || "File preview failed"),{code:result.code});
+      return result;
+    });
+  }
+
+  checkForChanges(cx) {
+    const now=Date.now();
+    if (this.checkingFile || !this.document?.source || now<this.nextPoll) return;
+    const afterIdle=now-(this.lastPoll || now)>300000;
+    this.lastPoll=now;
+    this.checkingFile = true;
+    cx.spawn(async task => {
+      const previousWarning=this.documentWarning;
+      let refreshed=false;
+      try {
+        if (this.revision && !afterIdle) {
+          const revision = (await this.request("revision")).revision.join(":");
+          if (revision === this.revision) {
+            this.pollDelay=Math.min(16000,(this.pollDelay || POLL_MS)*2);
+            this.documentWarning = null; return;
+          }
+        }
+        if (this.document.mode === "pdf") await this.readPdf(task);
+        else if (this.isPicture) {
+          this.picture=await this.request("image");
+          this.revision=this.picture.revision.join(":");
+        }
+        else await this.readText();
+        refreshed=true;
+        this.pollDelay=POLL_MS;
+        this.documentWarning = null;
+      } catch (error) {
+        this.pollDelay=16000;
+        this.documentWarning = String(error).replace(/^Error:\s*/, "");
+      } finally {
+        this.nextPoll=Date.now()+this.pollDelay;
+        this.checkingFile = false;
+        if(refreshed || previousWarning!==this.documentWarning) task.notify();
+      }
+    });
+  }
+
+  async readText() {
+    const {text,revision}=await this.request("text");
+    this.revision=revision.join(":");
+    if (text === null || text.includes("\0")) {
+      this.markdown=null;
+      this.code?.release();
+      this.code = null;
+      this.textStatus = "Preview unavailable for this file. Use Download to open it.";
+      return;
+    }
+    const ext = this.document.source.split('.').pop().toLowerCase();
+    const t = theme();
+    const displayed=text.length>400000 ? text.slice(0,400000)+"\n… (file truncated)" : text;
+    this.markdown=["md","markdown","mdown"].includes(ext) ? markdownBlocks(displayed) : null;
+    const next = EditorState.new({language:modes[ext] || ext,readonly:true,font_family:settings().font_family,font_size:12,
+      value:displayed,
+      syntax:{keyword:t.ansi5,string:t.ansi2,comment:t.dim,function:t.ansi4,type:t.ansi3,number:t.ansi1,constant:t.ansi6}});
+    this.code?.release();
+    this.code = next;
+    this.textStatus = null;
+  }
+
+  flow() {
+    const scale = Number(settings().zoom) || 1;
+    return pageFlow(this.sizes,this.width/scale,Math.max(80,this.height/scale-106),this.zoom);
+  }
+
+  anchor(y = this.scroll.y) {
+    const flow = this.flow();
+    const index = pageAt(flow,y);
+    const page = flow.pages[index];
+    return [index,page ? (y-page.top)/page.height : 0];
+  }
+
+  async readPdf(task) {
+    const [index,fraction] = this.pendingPosition?.anchor || this.anchor();
+    const width = this.rasterWidth();
+    const value = await this.request("preview",{page:index,width,sizes:true});
+    this.requestVersion++;
+    this.revision = value.revision.join(":");
+    this.cachedPdf = value.pdf;
+    this.sizes = value.sizes;
+    this.pages = new Map([[value.page,{...value,rasterWidth:width}]]);
+    this.failedPage = null;
+    this.selection = null;
+    this.scroll.y = index || fraction > 0 ? restorePosition(this.flow(),index,fraction) : 0;
+    this.pendingPosition = null;
+    this.queuePages(task);
+  }
+
+  rasterWidth(flow = this.flow()) {
+    const appZoom = Number(settings().zoom) || 1;
+    // Render at 2x display size. Buckets let nearby pane sizes reuse the same bitmap.
+    const pixels = Math.max(1100*this.zoom, flow.pageWidth*appZoom*2);
+    return Math.min(4096, Math.ceil(pixels/128)*128);
+  }
+
+  queuePages(cx) {
+    if (this.renderingPage || !this.sizes.length) return;
+    const flow = this.flow(), width = this.rasterWidth(flow);
+    const visible = visiblePages(flow,this.scroll.y);
+    const center = this.scroll.y+flow.viewportHeight*.35;
+    visible.sort((a,b)=>Math.abs(flow.pages[a].top-center)-Math.abs(flow.pages[b].top-center));
+    const index = visible.find(i=>i!==this.failedPage && (this.pages.get(i)?.rasterWidth || 0)<width);
+    if (index === undefined) return;
+    const version = this.requestVersion;
+    this.renderingPage = true;
+    cx.spawn(async task => {
+      try {
+        const remote = this.document.on !== null;
+        const previous=this.pages.get(index);
+        let result;
+        try {
+          result=await this.request(remote ? "render" : "preview",{source:this.cachedPdf,on:null,page:index,width,chars:!previous});
+        } catch (error) {
+          if (!remote || error.code!=="cache_miss") throw error;
+          result=await this.request("preview",{page:index,width});
+          if (version===this.requestVersion && result.revision.join(":")!==this.revision) {
+            await this.readPdf(task); return;
+          }
+        }
+        if (version === this.requestVersion && result.page === index && (remote || result.revision?.join(":")===this.revision)) {
+          this.pages.set(index,{...result,chars:previous?.chars ?? result.chars,rasterWidth:width});
+          const needed=new Set(visiblePages(this.flow(),this.scroll.y));
+          for(const other of this.pages.keys()) if(!needed.has(other)) this.pages.delete(other);
+        } else if(version===this.requestVersion) {
+          this.failedPage=index;
+        }
+      } catch (error) {
+        if (version === this.requestVersion) {
+          this.failedPage=index;
+          this.documentWarning=String(error);
+        }
+      } finally {
+        this.renderingPage=false;
+        task.notify();
+        this.queuePages(task);
+      }
+    });
+  }
+
+  moveTo(x,y,cx) {
+    const flow = this.flow();
+    this.scroll = {x:Math.max(0,Math.min(flow.maxX,x)),y:Math.max(0,Math.min(flow.maxY,y))};
+    this.queuePages(cx);
+    if (this.viewerPane && this.sizes.length) {
+      this.savePositionTimer?.cancel();
+      this.savePositionTimer=cx.timer.after(120,()=>{
+        if(this.viewerTab)saveDocumentPosition(this.viewerTab,this.viewerPane,this.documentId,{anchor:this.anchor(),zoom:this.zoom});
+      });
+    }
+    cx.notify();
+  }
+
+  changeZoom(zoom,cx,point) {
+    const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
+    if (next === this.zoom) return;
+    const appZoom = Number(settings().zoom) || 1;
+    const offsetY = (point?.y ?? 0)/appZoom;
+    const [index,fraction] = this.anchor(this.scroll.y + offsetY);
+    let x = this.scroll.x;
+    if (point) {
+      const offsetX = point.x/appZoom - PAGE_LEFT;
+      x = (x + offsetX)*next/this.zoom - offsetX;
+    }
+    this.zoom = next;
+    this.failedPage = null;
+    this.moveTo(x,restorePosition(this.flow(),index,fraction,offsetY),cx);
+  }
+
+  jump(index,cx) {
+    this.moveTo(this.scroll.x,restorePosition(this.flow(),Math.max(0,index),0),cx);
+  }
+
+  wheel(event,cx) {
+    cx.stop_propagation();
+    if (event.modifiers?.control) {
+      const dy = (event.delta_lines ?? event.delta).y;
+      if (dy) this.changeZoom(this.zoom + Math.sign(dy)*ZOOM_STEP,cx,event.local_position);
+      return;
+    }
+    const appZoom = Number(settings().zoom)||1;
+    const delta = event.delta_lines ? { x:event.delta_lines.x*28,y:event.delta_lines.y*28 } : event.delta;
+    const sideways = event.modifiers?.shift && !delta.x;
+    this.moveTo(this.scroll.x-(sideways?delta.y:delta.x)/appZoom,
+      this.scroll.y-(sideways?0:delta.y)/appZoom,cx);
+  }
+
+  point(event,strict) {
+    const point=event.local_position;
+    if (!point) return null;
+    const scale=Number(settings().zoom)||1, flow=this.flow();
+    const y=point.y/scale+this.scroll.y, index=pageAt(flow,y), page=flow.pages[index];
+    const data=this.pages.get(index);
+    if (!page || !data) return null;
+    const x=(point.x/scale+this.scroll.x-PAGE_LEFT)/page.width;
+    const row=(y-page.top)/page.height;
+    if (strict && (x<0 || x>1 || row<0 || row>1)) return null;
+    const char=hitChar(data.chars,x,row,strict);
+    return char<0 ? null : {index,char};
+  }
+
+  startSelection(event,cx) {
+    this.docFocus?.focus();
+    this.capturePane();
+    const start=this.point(event,true);
+    this.selecting=Boolean(start);
+    this.selection=start ? {start,end:start} : null;
+    cx.stop_propagation();
+    cx.notify();
+  }
+
+  extendSelection(event,cx) {
+    if (!this.selecting) return;
+    const end=this.point(event,false);
+    if (end && this.selection && (end.index!==this.selection.end.index || end.char!==this.selection.end.char)) {
+      this.selection.end=end;
+      cx.notify();
+    }
+  }
+
+  range(index) {
+    if (!this.selection) return null;
+    let {start,end}=this.selection;
+    if (start.index>end.index) [start,end]=[end,start];
+    if (index < start.index || index > end.index) return null;
+    return [index===start.index ? start.char : 0,index===end.index ? end.char : (this.pages.get(index)?.chars.length||0)-1];
+  }
+
+  copyDocumentText(cx) {
+    if (!this.selection) return;
+    const {start,end}=this.selection, chunks=[];
+    for(let index=Math.min(start.index,end.index);index<=Math.max(start.index,end.index);index++) {
+      const data=this.pages.get(index), range=this.range(index);
+      if (!data || !range) continue;
+      const text=selectedText(data.chars,...range);
+      if (text) chunks.push(text);
+    }
+    if (chunks.length) cx.write_to_clipboard(chunks.join("\n"));
+  }
+
+  keyDocument(event,cx) {
+    const key=event.key?.toLowerCase();
+    if(event.modifiers?.control && key==='c') { this.copyDocumentText(cx);cx.stop_propagation();return; }
+    const g=this.flow();
+    const delta={pagedown:g.viewportHeight*.85,pageup:-g.viewportHeight*.85,down:45,up:-45}[key];
+    if(delta || key==='home' || key==='end') {
+      this.moveTo(this.scroll.x,key==='home'?0:key==='end'?g.maxY:this.scroll.y+delta,cx);
+      cx.stop_propagation();
+    }
+  }
+
+  closeDocument() {
+    this.capturePane();
+    const pane = panes().find(p=>p.pane===this.viewerPane && p.mod==="personal-files");
+    if (pane && this.document.split) run("pane.close",{pane:pane.pane});
+    else if (pane && panes().filter(p=>p.tab===pane.tab).length===1) run("tab.close",{id:pane.tab,confirmed:true});
+    else if (pane) run("pane.close",{pane:pane.pane});
+    else notify({title:"Select the document pane before closing",level:"info"});
+  }
+
+  pageImage(index, page, t) {
+    const left=PAGE_LEFT-this.scroll.x, top=page.top-this.scroll.y;
+    const data=this.pages.get(index);
+    const el=div().id(`doc-page-${index}`).absolute().left(left).top(top).w(page.width).h(page.height).bg("#ffffff");
+    if (!data) return el.child(div().px(10).py(6).text_color("#606060").child(`Page ${index+1}`));
+    const range=this.range(index);
+    return el.child(image(data.image).absolute().inset_0().w(page.width).h(page.height))
+      .children((range?selectionRects(data.chars,...range):[]).map(r=>div().absolute().left(r[0]*page.width).top(r[1]*page.height)
+        .w((r[2]-r[0])*page.width).h(Math.max(2,(r[3]-r[1])*page.height)).bg("#60a5fa66")));
+  }
+
+  renderDocument(cx) {
+    if (!checking()) this.capturePane();
+    const t=theme(), {source,on,mode}=this.document;
+    const isPdf=mode==="pdf", caption=source?.split(/[\\/]/).pop()||"Document";
+    const g=this.flow(), index=pageAt(g,this.scroll.y+1), data=this.pages.get(index);
+    const compact=g.viewportWidth<320;
+    const narrow=g.viewportWidth<205;
+    const picture=this.picture;
+    const scale=picture ? Math.max(0.01,Math.min(1,(g.viewportWidth-16)/picture.width,
+      (this.height/(Number(settings().zoom)||1)-58)/picture.height)) : 1;
+    return v_flex().id("file-document").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
+      .on_size_change((size,cx)=>{
+        if(this.width===size.width && this.height===size.height)return;
+        const anchor=this.anchor();this.width=size.width;this.height=size.height;
+        this.moveTo(this.scroll.x,restorePosition(this.flow(),...anchor),cx);
+      })
+      .track_focus(this.docFocus).on_key_down((e,cx)=>{if(isPdf)this.keyDocument(e,cx);})
+      .child(h_flex().h(42).flex_none().px(10).gap(5).items_center().bg(t.chrome)
+        .child(div().flex_1().min_w(0).truncate().font_semibold().child(caption))
+        .when(Boolean(this.markdown),el=>el.child(this.button("markdown-toggle",this.showSource?"Preview":"Source",cx=>{
+          this.showSource=!this.showSource;cx.notify();
+        })))
+        .when(!compact,el=>el.child(this.button("document-download","Download",()=>this.job([{action:"download",source,on,job:jobId()}]),!source)))
+        .when(isPdf && !compact,el=>el.child(this.button("pdf-copy","Copy text",cx=>this.copyDocumentText(cx),!this.selection)))
+        .child(this.button("document-close",compact?"×":"Close",()=>this.closeDocument())))
+      .when(!isPdf && this.markdown && !this.showSource,el=>el.child(v_flex().id("markdown-preview").flex_1().min_h(0)
+        .overflow_y_scrollbar().px(18).py(12).gap(8).children(this.markdown.map((block,i)=>
+          TextView.markdown("markdown-block-"+i,block).selectable(true).scrollable(false).w_full()
+            .on_link_click((url,cx)=>{if (/^https?:\/\/[^\s\\/]+(?:[/?#]|$)/i.test(url)) cx.open_url(url);})))) )
+      .when(this.isPicture,el=>el.child(div().flex_1().min_h(0).flex().items_center().justify_center()
+        .child(picture && !this.documentWarning ? image(picture.image).w(picture.width*scale).h(picture.height*scale)
+          : div().text_color(t.dim).child(this.documentWarning||"Loading image…"))))
+      .when(!isPdf && !this.isPicture && (!this.markdown || this.showSource),el=>el.child(this.code ? Editor.new(this.code).flex_1().min_h(0)
+        : div().p(12).text_color(t.dim).child(this.documentWarning||this.textStatus||"Loading file…")))
+      .when(isPdf,el=>el
+        .child(h_flex().h(40).flex_none().px(9).gap(4).items_center().bg(t.surface)
+          .child(this.button("pdf-prev",compact?"‹":"‹ Prev",cx=>this.jump(index-1,cx),index===0))
+          .child(div().text_color(t.muted).child(this.sizes.length?`${index+1} / ${this.sizes.length}`:"PDF"))
+          .child(this.button("pdf-next",compact?"›":"Next ›",cx=>this.jump(index+1,cx),index>=this.sizes.length-1))
+          .child(div().flex_1())
+          .when(!narrow,bar=>bar
+            .child(this.button("pdf-zoom-out","−",cx=>this.changeZoom(this.zoom-ZOOM_STEP,cx),this.zoom<=MIN_ZOOM))
+            .child(this.button("pdf-fit",`${Math.round(this.zoom*100)}%`,cx=>this.changeZoom(1,cx)))
+            .child(this.button("pdf-zoom-in","+",cx=>this.changeZoom(this.zoom+ZOOM_STEP,cx),this.zoom>=MAX_ZOOM))))
+        .child(div().id("pdf-scroll").relative().h(g.viewportHeight).flex_none().w_full().overflow_hidden()
+          .on_scroll_wheel((event,cx)=>this.wheel(event,cx))
+          .on_mouse_down("left",(event,cx)=>this.startSelection(event,cx))
+          .on_mouse_move((event,cx)=>this.extendSelection(event,cx))
+          .on_mouse_up("left",(event,cx)=>{this.extendSelection(event,cx);this.selecting=false;cx.stop_propagation();})
+          .on_hover(hovered=>{if(!hovered)this.selecting=false;})
+          .children(visiblePages(g,this.scroll.y).map(i=>this.pageImage(i,g.pages[i],t)))
+          .when(g.maxY>0,view=>view.child(div().absolute().right(2).top(2+this.scroll.y/g.maxY*Math.max(0,g.viewportHeight-50)).w(5).h(46).rounded(3).bg(t.muted))))
+        .child(div().h(24).flex_none().px(12).text_size(11).truncate().text_color(this.documentWarning?t.blocked:t.muted)
+          .child(this.documentWarning||(!data?"Loading PDF…":data.chars.some(item=>item.r)?"Drag to select text · Ctrl+C to copy":"No text layer on this page"))));
+  }
+}
