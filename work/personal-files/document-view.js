@@ -1,10 +1,10 @@
 import { View, div, image } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState, TextView } from "gpui-base";
-import { theme, settings, props, checking, focused, panes, run, notify } from "herdr";
+import { v_flex, h_flex, Editor, EditorState, TextView, ScrollHandle } from "gpui-base";
+import { theme, settings, props, checking, focused, panes, run, notify, openOverlay } from "herdr";
 import { bridge, jobId } from "./actions.js";
 import { hitChar, selectedText, selectionRects } from "./pdf-geometry.js";
 import { pageFlow, visiblePages, pageAt, restorePosition } from "./document-flow.js";
-import { documentPane, registerDocument, fileDocument, saveDocumentPosition } from "./document-drag.js";
+import { attachGroup, choosePage, closePage, groupState, groupPaneFor, saveDocumentPosition } from "./document-drag.js";
 
 const modes = { ts:"js", tsx:"js", jsx:"js", ps1:"powershell", yml:"yaml", jsonc:"json", md:"markdown" };
 const POLL_MS = 2000;
@@ -42,9 +42,84 @@ function markdownBlocks(source) {
 
 export class DocumentView extends View {
   initDocument(cx) {
-    const p = props() || {};
-    this.document = { source:p.source, on:p.on ?? null, split:p.split, mode:p.mode };
+    this.groupProps = props() || {};
+    this.tabScroll = ScrollHandle.new();
+    this.openViews = new Map();
+    if (!checking()) this.groupId=attachGroup(this.groupProps,groupPaneFor(this.groupProps));
+  }
+
+  syncOpenViews(cx) {
+    this.mountPending=false;
+    if (!groupState(this.groupId)?.pane) {
+      this.groupId=attachGroup(this.groupProps,groupPaneFor(this.groupProps));
+    }
+    const group=groupState(this.groupId);
+    const index=group?.docs.findIndex(doc=>doc.id===group.active) ?? -1;
+    const active=group?.docs[index];
+    for (const [id,view] of this.openViews) {
+      if (!group?.docs.some(doc=>doc.id===id)) {
+        this.openViews.delete(id);
+        view.release();
+      }
+    }
+    if ((active?.id ?? null)===this.pageId) return;
+    if (active) {
+      this.page=this.openViews.get(active.id) ||
+        cx.new(GroupPage,{...active,groupId:this.groupId,tab:group.tab,pane:group.pane});
+      this.openViews.delete(active.id);
+      this.openViews.set(active.id,this.page);
+      this.tabScroll.scroll_to_item(index);
+    } else this.page=null;
+    this.pageId=active?.id ?? null;
+    if (this.openViews.size>4) {
+      const [oldest,view]=this.openViews.entries().next().value;
+      this.openViews.delete(oldest);
+      view.release();
+    }
+    cx.notify();
+  }
+
+  renderDocument(cx) {
+    const t=theme();
+    const group=this.groupId && groupState(this.groupId);
+    const active=group?.docs.find(doc=>doc.id===group.active);
+    const closed=[...(this.openViews?.keys() || [])].some(id=>!group?.docs.some(doc=>doc.id===id));
+    if (!checking() && !this.mountPending && (!group?.pane || closed || (active?.id ?? null)!==this.pageId)) {
+      this.mountPending=true;
+      // A spawned callback starts synchronously. Mount retained pages after this render.
+      cx.timer.after(1,task=>this.syncOpenViews(task));
+    }
+    const select=(doc,closing,event)=>{
+      event.stop_propagation();
+      if (group.pane) run("pane.focus",{pane:group.pane});
+      if (closing) closePage(this.groupId,doc.id);
+      else choosePage(this.groupId,doc.id);
+    };
+    const strip=h_flex().id("pane-file-tabs").w_full().h(32).flex_none().items_center().gap(2)
+      .px(4).bg(t.chrome).border_b(1).border_color(t.border).overflow_x_scroll().track_scroll(this.tabScroll);
+    for (const doc of group?.docs || []) {
+      const selected=doc.id===group.active;
+      strip.child(h_flex().id("file-tab-"+doc.id).h(27).flex_none().max_w(210).px(7).gap(5).rounded(4)
+        .items_center().cursor_pointer().bg(selected?t.selected:t.chrome).text_color(selected?t.foreground:t.muted)
+        .tooltip(doc.source).on_click((_e,c)=>select(doc,false,c))
+        .child(div().min_w(0).truncate().text_size(12).child(doc.name))
+        .child(div().id("close-file-tab-"+doc.id).w(17).h(19).flex().items_center().justify_center().rounded(3)
+          .hover(el=>el.bg(t.hover)).tooltip("Close file").on_click((_e,c)=>select(doc,true,c)).child("×")));
+    }
+    return v_flex().id("document-group").size_full().min_h(0).bg(t.background).text_color(t.foreground)
+      .on_mouse_down("left",()=>{if (group?.pane && focused()?.pane!==group.pane) run("pane.focus",{pane:group.pane});})
+      .child(strip).child(div().flex_1().min_h(0).overflow_hidden()
+        .when(Boolean(this.page && active?.id===this.pageId),el=>el.child(this.page))
+        .when(!active,el=>el.child(div().p(12).text_color(t.muted).child("Open a file from Files"))));
+  }
+
+  initPage(p,cx) {
+    this.document = { source:p.source, on:p.on ?? null, mode:p.mode ?? "pdf" };
+    this.transfer = p.transfer ?? true;
     this.documentId = p.id;
+    this.groupId = p.groupId;
+    this.viewerPane = p.pane;
+    this.viewerTab = p.tab;
     this.isPicture=/\.(?:png|jpe?g)$/i.test(p.source || "");
     this.width = 850;
     this.height = 720;
@@ -58,37 +133,14 @@ export class DocumentView extends View {
     this.docFocus = cx.focus_handle();
     if (checking() || !p.source) return;
     this.checkForChanges(cx);
-    cx.timer.after(200,()=>{
-      this.capturePane();
-      if(this.viewerPane && p.source) {
-        registerDocument({...fileDocument(p.source,p.on??null),id:p.id,split:p.split,position:p.position},
-          this.viewerTab,this.viewerPane,p.anchorTab);
-      }
-    });
     cx.timer.every(POLL_MS, tick => { if (this.isShown()) this.checkForChanges(tick); });
   }
 
   isShown() {
+    if (this.groupId && groupState(this.groupId)?.active!==this.documentId) return false;
     const id = focused()?.tab;
     if (this.viewerTab) return id === this.viewerTab;
     return true;
-  }
-
-  capturePane() {
-    const current = focused();
-    if (!current?.tab) return;
-    const placed=documentPane(this.documentId);
-    if (placed) {
-      this.viewerPane=placed;
-      this.viewerTab=panes().find(p=>p.pane===placed)?.tab||this.viewerTab;
-      return;
-    }
-    if(this.document.split && this.documentId) return;
-    const list = panes().filter(p => p.tab === current.tab);
-    if (!this.viewerPane && list.some(p => p.pane === current.pane && p.mod === "personal-files")) {
-      this.viewerPane = current.pane;
-      this.viewerTab = current.tab;
-    }
   }
 
   request(action, fields={}) {
@@ -299,8 +351,8 @@ export class DocumentView extends View {
   }
 
   startSelection(event,cx) {
+    if (this.viewerPane && focused()?.pane!==this.viewerPane) run("pane.focus",{pane:this.viewerPane});
     this.docFocus?.focus();
-    this.capturePane();
     const start=this.point(event,true);
     this.selecting=Boolean(start);
     this.selection=start ? {start,end:start} : null;
@@ -348,15 +400,6 @@ export class DocumentView extends View {
     }
   }
 
-  closeDocument() {
-    this.capturePane();
-    const pane = panes().find(p=>p.pane===this.viewerPane && p.mod==="personal-files");
-    if (pane && this.document.split) run("pane.close",{pane:pane.pane});
-    else if (pane && panes().filter(p=>p.tab===pane.tab).length===1) run("tab.close",{id:pane.tab,confirmed:true});
-    else if (pane) run("pane.close",{pane:pane.pane});
-    else notify({title:"Select the document pane before closing",level:"info"});
-  }
-
   pageImage(index, page, t) {
     const left=PAGE_LEFT-this.scroll.x, top=page.top-this.scroll.y;
     const data=this.pages.get(index);
@@ -368,8 +411,7 @@ export class DocumentView extends View {
         .w((r[2]-r[0])*page.width).h(Math.max(2,(r[3]-r[1])*page.height)).bg("#60a5fa66")));
   }
 
-  renderDocument(cx) {
-    if (!checking()) this.capturePane();
+  renderPage(cx) {
     const t=theme(), {source,on,mode}=this.document;
     const isPdf=mode==="pdf", caption=source?.split(/[\\/]/).pop()||"Document";
     const g=this.flow(), index=pageAt(g,this.scroll.y+1), data=this.pages.get(index);
@@ -392,7 +434,7 @@ export class DocumentView extends View {
         })))
         .when(!compact,el=>el.child(this.button("document-download","Download",()=>this.job([{action:"download",source,on,job:jobId()}]),!source)))
         .when(isPdf && !compact,el=>el.child(this.button("pdf-copy","Copy text",cx=>this.copyDocumentText(cx),!this.selection)))
-        .child(this.button("document-close",compact?"×":"Close",()=>this.closeDocument())))
+        )
       .when(!isPdf && this.markdown && !this.showSource,el=>el.child(v_flex().id("markdown-preview").flex_1().min_h(0)
         .overflow_y_scrollbar().px(18).py(12).gap(8).children(this.markdown.map((block,i)=>
           TextView.markdown("markdown-block-"+i,block).selectable(true).scrollable(false).w_full()
@@ -422,5 +464,21 @@ export class DocumentView extends View {
           .when(g.maxY>0,view=>view.child(div().absolute().right(2).top(2+this.scroll.y/g.maxY*Math.max(0,g.viewportHeight-50)).w(5).h(46).rounded(3).bg(t.muted))))
         .child(div().h(24).flex_none().px(12).text_size(11).truncate().text_color(this.documentWarning?t.blocked:t.muted)
           .child(this.documentWarning||(!data?"Loading PDF…":data.chars.some(item=>item.r)?"Drag to select text · Ctrl+C to copy":"No text layer on this page"))));
+  }
+}
+
+// Each retained page owns its timers, editor and bitmaps. Hidden pages skip
+// polling and are released on close or when evicted from the pane's four recent views.
+class GroupPage extends DocumentView {
+  init(p,cx) { this.initPage(p,cx); }
+  render(cx) { return this.renderPage(cx); }
+  button(id,label,action,disabled=false) {
+    const t=theme();
+    return div().id(id).px(9).py(5).rounded(5).text_color(disabled?t.dim:t.foreground)
+      .cursor_pointer().hover(el=>el.bg(disabled?t.surface:t.hover))
+      .on_click((_e,cx)=>{if (!disabled) action(cx);}).child(label);
+  }
+  job(requests) {
+    openOverlay({mod:"personal-files",kind:"dialog",width:520,height:300,props:{mode:"job",requests}});
   }
 }

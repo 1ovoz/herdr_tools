@@ -1,4 +1,5 @@
-import { exec, notify, run } from "herdr";
+import { exec, notify } from "herdr";
+import { routeDocument } from "../personal-files/document-drag.js";
 
 const RESOLVE_REMOTE = `
 import json, os, re, sys
@@ -55,9 +56,8 @@ export async function handleLink({link, source}) {
   if (!path) return "pass";
   const name = path.split(/[\\/]/).pop();
   if (!name) return "pass";
-  run("tab.new", {space:source.space,name,mod:"personal-files",props:{
-    source:path,on:source.machine,mode:/\.pdf$/i.test(name)?"pdf":"document",anchorTab:source.tab,
-  }});
+  routeDocument({name,source:path,on:source.machine,mode:/\.pdf$/i.test(name)?"pdf":"document"},
+    source.space,source.tab,source.pane);
   return "handled";
 }
 

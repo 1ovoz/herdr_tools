@@ -13,3 +13,5 @@ Windows x64 v1.0 (internal 1.3.0) includes both the Windows progress-file lock f
 Windows x64 v1.4.0 includes the Files menu, pointer-anchored high-resolution PDF zoom, bounded previews and cache cleanup, and in-place upgrade checks for existing profiles. Omitted options preserve the selected features and usage host.
 
 Windows x64 v1.5.0 adds independent saved usage sources for Codex and Claude Code, a compact kit version in the status bar, and source and destination feedback when dragging files within Files.
+
+Windows x64 v1.6.0 adds per-pane file tabs, focuses an existing document when reopened in the same space, and adds a split layout chooser. Files supports single-click selection, Delete confirmation, Enter or double-click to open, and manual refresh of expanded folders. File dialogs use aligned action buttons.

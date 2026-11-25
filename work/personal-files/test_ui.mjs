@@ -4,6 +4,8 @@ import vm from 'node:vm';
 
 const ids = new Map(), overlays = [], closed = [], jobs = [], shared = new Map(), bindings = [];
 const splits = [], tasks = [], copied = [], opened = [];
+const destinations = [], listed = [], listings = new Map();
+let focusedPane = null;
 let propsValue = {}, bridgeResult = {ok:true,path:'/download'}, stopped = 0, tid = 0, paints = 0, zoom = 1;
 function element() {
   const handlers = {}, styles = {}, children = [];
@@ -34,17 +36,26 @@ const context = {
   console, Map, Set, Math, JSON, Date, Error, View:class {}, DocumentView:class {},
   ...vm.runInNewContext(fs.readFileSync(new URL('./document-drag.js',import.meta.url),'utf8')
     .replace(/^import .*;\r?\n/gm,'').replace(/^export /gm,'') + '\n;({fileDocument,movement})'),
-  openDocument: doc => opened.push(doc.source),
+  openDocument: (doc,_cx,pane) => { opened.push(doc.source); destinations.push(pane); },
   startDocumentDrag: (doc,side) => splits.push({doc,side}),
   div:element, svg:element, h_flex:element, v_flex:element,
-  props: () => propsValue, checking: () => true, theme: () => ({selected:'selected',accent:'accent'}), settings: () => ({zoom}),
+  props: () => propsValue, checking: () => true, theme: () => new Proxy({}, {get: (_, token) => token}), settings: () => ({zoom}),
   shared: key => shared.get(key), setShared: (key,value) => shared.set(key,value),
   bridge: async q => { jobs.push(q); return bridgeResult; }, jobId: () => 'id-' + ++tid,
   openOverlay: q => overlays.push(q), closeOverlay: id => closed.push(id),
   uploadRequests: (paths,directory,on) => paths.map(source => ({action:'upload',source,directory,on})),
   InputState: {new: ({value}) => ({value:() => value, set_value(next) { value = next; }, on() {}, focus() {}, set_selected_range() {}})},
-  Input: {new:element}, EditorState:{}, Editor:{}, notify() {},
-  spaces:() => [], panes:() => [], focused:() => null, window:() => ({platform:'windows'})
+  Button: {new: id => element().id(id)}, Input: {new:element}, EditorState:{}, Editor:{}, notify() {},
+  spaces:() => [], panes:() => [], focused:() => focusedPane, window:() => ({platform:'windows'}),
+  exec: async (program,args,options) => {
+    if (program === 'git') return {code:1};
+    assert.equal(program,'sh');
+    const path = args.at(-1);
+    listed.push([options.on,path]);
+    const entries = listings.get(path);
+    if (!entries) throw new Error('Missing folder ' + path);
+    return {code:0,stdout:entries.map(e => (e.dir?'d':'f') + '\0' + e.name + '\0').join('')};
+  }
 };
 const staged = process.argv[2];
 const source = fs.readFileSync(staged || new URL('./main.js',import.meta.url),'utf8')
@@ -60,9 +71,9 @@ function render(instance, p) {
   propsValue = p; ids.clear();
   return instance.render(cx);
 }
-function click(id) {
+function click(id, count = 1) {
   assert.ok(ids.has(id), 'Missing control ' + id);
-  ids.get(id).handlers.on_click({},cx);
+  ids.get(id).handlers.on_click({click_count:count},cx);
 }
 function runKey(el, keys) {
   const row = bindings.find(b => b.keystroke === keys && b.context === el.handlers.context);
@@ -77,7 +88,7 @@ async function finish() {
 const both = {transfer:true, pdf:true};
 function panel(root = '/project', on = 'lab', features = both) {
   const props = {folder:root,on,...features}, file = view(props);
-  Object.assign(file,{root,on,context:{key:JSON.stringify({cwd:root,on,space:'pinned'})},entries:new Map([
+  Object.assign(file,{root,on,context:{key:JSON.stringify({cwd:root,on,space:'pinned'}),cwd:root,on},entries:new Map([
     ['',[{name:'folder',dir:true},{name:'a.pdf',dir:false}]], ['folder',[{name:'한글.txt',dir:false}]]
   ]),folders:new Set(['folder']),marks:{}});
   return {file,props};
@@ -172,6 +183,43 @@ work = fileJob(); await finish();
 popup = menuAt(files,'upload-root');
 const afterMove = overlays.length; click('paste'); assert.equal(overlays.length,afterMove);
 
+// The dismissal and confirmation stay together in a fixed, right-aligned footer.
+function checkFooter(dialog, ...buttonIds) {
+  const footer = dialog.contents.at(-1);
+  assert.ok('justify_end' in footer.styles && 'flex_none' in footer.styles,
+    'Long dialog messages must leave space for the action row');
+  assert.deepEqual(footer.contents.map(button => buttonIds.find(id => ids.get(id) === button)), buttonIds);
+  const [first, second] = footer.contents;
+  assert.ok(first.styles.h?.[0] >= 30, 'A modal action must have a visible click target');
+  if (second) {
+    assert.deepEqual(first.styles.h, second.styles.h, 'Dismissal and confirmation share a height');
+    assert.notEqual(first.styles.border_color?.[0], second.styles.border_color?.[0],
+      'The confirmation must be distinguishable from the dismissal before hovering');
+  }
+  return second || first;
+}
+const target = {source:'/project/a.pdf',name:'a.pdf',on:'lab',dir:false};
+for (const mode of ['rename','delete']) {
+  const p = {mode,target,transfer:true,overlay:'edit'};
+  const instance = view(p);
+  instance.error = 'A long error message. '.repeat(40);
+  const confirm = checkFooter(render(instance,p),'cancel-change','confirm-' + mode);
+  assert.equal(confirm.styles.border_color[0], mode === 'delete' ? 'ansi1' : 'solid');
+}
+const uploadProps = {mode:'job',overlay:'job',transfer:true,requests:[{action:'upload',source:'a.pdf',directory:'/project',job:'upload'}]};
+const uploadJob = view(uploadProps);
+bridgeResult = {ok:false,error:'Connection failed'};
+uploadJob.work(cx);
+assert.equal(checkFooter(render(uploadJob,uploadProps),'close-job').styles.disabled[0],true);
+await finish();
+checkFooter(render(uploadJob,uploadProps),'close-job','retry-file');
+bridgeResult = {ok:false,code:'exists',error:'File exists'}; click('retry-file'); await finish();
+const replace = checkFooter(render(uploadJob,uploadProps),'close-job','replace-file');
+assert.equal(replace.styles.border_color[0],'ansi1');
+bridgeResult = {ok:true,path:'/project/a.pdf'}; click('replace-file'); await finish();
+assert.equal(jobs.at(-1).overwrite,true);
+checkFooter(render(uploadJob,uploadProps),'close-job');
+
 popup = menuAt(files,'file-a.pdf'); runKey(popup.el,'f2');
 let dialog = openDialog(); const beforeRename = jobs.length;
 assert.equal(jobs.length,beforeRename);
@@ -264,8 +312,71 @@ assert.equal(splits.at(-1).doc.source,'/project/a.pdf','Leaving the panel retain
 pointer('file-a.pdf',down,255,275);
 pointer('file-a.pdf',up,255,275);
 click('file-a.pdf');
-assert.equal(opened.at(-1),'/project/a.pdf','A fresh click still opens the file');
+assert.equal(opened.length,0,'A single click selects a PDF and keeps the tree active');
+render(drag.file,drag.props);
+assert.equal(ids.get('file-a.pdf').styles.bg[0],'selected');
+runKey(ids.get('files-tree'),'delete');
+assert.equal(overlays.at(-1).props.mode,'delete');
+assert.equal(overlays.at(-1).props.target.source,'/project/a.pdf');
+assert.equal(jobs.length,beforeCancel,'Del only opens the confirmation');
+pointer('file-folder/한글.txt',down,255,275);
+runKey(ids.get('files-tree'),'delete');
+assert.equal(overlays.at(-1).props.target.source,'/project/folder/한글.txt','A key arriving before repaint acts on the latest selection');
+pointer('file-folder',down,255,275);
+const beforeFolderKey = overlays.length;
+runKey(ids.get('files-tree'),'delete');
+assert.equal(overlays.length,beforeFolderKey,'A stale file binding cannot open deletion on a folder');
+focusedPane = {pane:'pane-right',tab:'tab-1'};
+render(drag.file,drag.props);
+pointer('file-a.pdf',down,255,275);
+pointer('file-a.pdf',up,255,275);
+focusedPane = null;
+click('file-a.pdf',2);
+assert.equal(opened.at(-1),'/project/a.pdf','Double-click opens the selected PDF');
+assert.equal(destinations.at(-1),'pane-right');
+focusedPane = {pane:'pane-left',tab:'tab-1'};
+pointer('file-folder/한글.txt',down,255,275);
+pointer('file-folder/한글.txt',up,255,275);
+click('file-folder/한글.txt');
+focusedPane = null;
+render(drag.file,drag.props);
+assert.equal(drag.file.file ?? null,null,'Selecting text keeps it in the tree');
+ids.get('files-tree').handlers.on_key_down({key:'enter',keystroke:'enter'},cx);
+assert.equal(opened.at(-1),'/project/folder/한글.txt');
+assert.equal(destinations.at(-1),'pane-left');
 zoom = 1;
+
+const refresh = panel();
+render(refresh.file,refresh.props);
+pointer('file-folder/한글.txt',down,255,275);
+pointer('file-folder/한글.txt',up,255,275);
+listings.set('/project',[{name:'folder',dir:true},{name:'new.txt',dir:false}]);
+listings.set('/project/folder',[{name:'new-child.txt',dir:false}]);
+click('files-refresh');
+click('files-refresh');
+click('files-refresh');
+await finish();
+render(refresh.file,refresh.props);
+assert.deepEqual(listed,[
+  ['lab','/project'],['lab','/project/folder'],
+  ['lab','/project'],['lab','/project/folder']
+],'Repeated refresh during a scan queues one more scan on the same machine');
+assert.ok(ids.has('file-new.txt') && ids.has('file-folder/new-child.txt') && !ids.has('file-a.pdf'));
+assert.equal(refresh.file.selected,null,'A file removed outside the app cannot be targeted by Del');
+listings.set('/project',[]);
+ids.get('files-tree').handlers.on_key_down({key:'f5',keystroke:'f5'},cx);
+await finish();
+render(refresh.file,refresh.props);
+assert.ok(!ids.has('file-folder') && !refresh.file.folders.has('folder'));
+assert.equal(refresh.file.error,null,'An externally removed expanded folder is skipped');
+assert.equal(listed.length,5);
+
+const windows = panel('C:\\project\\',null);
+render(windows.file,windows.props);
+pointer('file-a.pdf',down,255,275);
+pointer('files',move,285,295);
+ids.get('files').handlers.on_hover(false,cx);
+assert.equal(splits.at(-1).doc.source,'C:\\project\\a.pdf','Dragging and opening use the same path at a Windows root');
 
 if (staged) {
   popup = menuAt(panel('/project','lab',{pdf:true}),'file-a.pdf');
@@ -287,5 +398,9 @@ if (staged) {
   render(disabled.file,disabled.props);
   assert.ok(!ids.get('file-a.pdf').handlers['on_mouse_down:right']);
   assert.ok(!ids.has('upload-root'));
+  assert.ok(ids.has('files-refresh'),'Refresh also works without transfer or document features');
+  pointer('file-a.pdf',down,255,275);
+  click('file-a.pdf',2);
+  assert.equal(disabled.file.file,'a.pdf','With PDF disabled, opening retains the built-in inline preview');
 }
 console.log('Files UI checks passed', staged ? '(staged)' : '(source)');

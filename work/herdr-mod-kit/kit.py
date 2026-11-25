@@ -16,7 +16,7 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parent
-VERSION = '1.5.0'
+VERSION = '1.6.0'
 FEATURES = ('usage', 'transfer', 'pdf', 'tabs')
 MODS = {'usage':'herdr-kit-usage', 'transfer':'herdr-kit-files', 'pdf':'herdr-kit-pdf', 'tabs':'herdr-kit-pane'}
 TABS_MOD = 'herdr-kit-tabs'
@@ -26,7 +26,7 @@ NATIVE_DEPS = {
     'usage': (MODS['usage'],),
     'transfer': (MODS['transfer'],),
     'pdf': (MODS['transfer'], MODS['pdf'], TABS_MOD, LINKS_MOD),
-    'tabs': (MODS['transfer'], MODS['tabs']),
+    'tabs': (MODS['transfer'], MODS['tabs'], TABS_MOD),
 }
 DOCUMENT_MODULES = ('actions.js', 'document-drag.js', 'document-flow.js')
 HELPERS = Path('data')/'herdr-mod-kit'/'helpers'
@@ -128,11 +128,12 @@ def make_layout(base, features):
         content = files[0]['content']
         content['mod'] = MODS['transfer']
         content['props'] = {**content.get('props',{}), 'transfer':'transfer' in selected, 'pdf':'pdf' in selected}
-    if 'pdf' in selected:
+    if selected.intersection(('pdf','tabs')):
         tabs = [node for node in nodes(base) if node.get('id')=='tabs' and node.get('content',{}).get('mod')=='tabs']
         if len(tabs)!=1:
-            raise KitError('pdf_tabs_structure_changed: default layout needs one Tabs block')
+            raise KitError('tabs_structure_changed: default layout needs one Tabs block')
         tabs[0]['content']['mod'] = TABS_MOD
+    if 'pdf' in selected:
         base['link_handlers'] = list(dict.fromkeys([*base.get('link_handlers',[]), LINKS_MOD]))
     if 'tabs' in selected:
         headers=[]
@@ -372,6 +373,9 @@ def install_locked(options, home, app, core):
                 # Herdr restricts JavaScript imports to the current mod's folder.
                 for name in DOCUMENT_MODULES:
                     shutil.copyfile(ROOT/'common'/name,dest/name)
+            if mod in (TABS_MOD,LINKS_MOD):
+                for name in ('actions.js','document-drag.js'):
+                    shutil.copyfile(ROOT/'common'/name,dest/name)
             staged_targets.update({p.relative_to(stage).as_posix():p for p in dest.rglob('*') if p.is_file()})
             ok,code=native_check(app,home,dest,verbose=True)
             owners=[feature for feature in features if mod in NATIVE_DEPS[feature]] or ['installer']
@@ -494,13 +498,16 @@ def diagnose(options, home, app):
         comparisons=['layout/main.json']
         if feature in ('pdf','transfer'):
             comparisons.append('mods/files/main.js')
-        if feature=='pdf' and 'mods/tabs/main.js' in old_upstream:
+        if feature in ('pdf','tabs') and 'mods/tabs/main.js' in old_upstream:
             comparisons.append('mods/tabs/main.js')
         if feature=='tabs':
             comparisons.extend(['mods/files/main.js','mods/pane/main.js'])
         for item in comparisons:
             checks.append((f'upstream_changed:{item}',current_upstream.get(item)!=old_upstream.get(item)))
         deps=NATIVE_DEPS[feature]
+        # Earlier tabs-only installs used Herdr's stock tab bar.
+        if feature=='tabs' and f'mods/{TABS_MOD}/main.js' not in state.get('files',{}):
+            deps=(MODS['transfer'], mod)
         if feature=='pdf' and state.get('version') in ('1.0.0','1.1.0'):
             deps=(MODS['transfer'],mod) if state['version']=='1.0.0' else (MODS['transfer'],mod,TABS_MOD)
         relevant={key:value for key,value in state.get('files',{}).items() if any(key.startswith(f'mods/{name}/') for name in deps)}

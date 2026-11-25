@@ -1,6 +1,6 @@
-# Herdr Mod Kit · Windows x64 v1.5.0
+# Herdr Mod Kit · Windows x64 v1.6.0
 
-Windows x64용 Herdr 데스크톱 모드입니다. 사용량 표시, 파일 전송, PDF 뷰어, 탭 관리를 함께 설치하거나 골라서 사용할 수 있습니다. 배포 파일명은 v1.5.0이며, 기존 설치를 구분하는 내부 버전은 1.5.0입니다.
+Windows x64용 Herdr 데스크톱 모드입니다. 사용량 표시, 파일 전송, PDF 뷰어, 탭 관리를 함께 설치하거나 골라서 사용할 수 있습니다. 배포 파일명은 v1.6.0이며, 기존 설치를 구분하는 내부 버전은 1.6.0입니다.
 
 ## 새 Windows PC에 설치하기
 
@@ -14,18 +14,20 @@ py -3 -X utf8 .\kit.py install --usage-machine my-server --activate
 
 `py`가 없는 PC에서는 `python`을 사용합니다. Windows에 Codex·Claude Code를 직접 로그인해 사용하는 경우 `--usage-machine local`을 지정할 수 있습니다. 원격 조회는 해당 머신의 `python3` 및 두 CLI의 구독 로그인 파일이 필요합니다. Fable은 계정에서 별도 한도를 제공하는 경우에 표시됩니다. 로그인 파일이나 원격 연결 정보는 ZIP에 들어 있지 않습니다.
 
-업데이트가 적용되면 하단바 오른쪽에 `mod 1.5.0`이 보입니다. 사용량 막대를 눌러 **Sources**를 열고, Codex와 Claude Code가 읽을 머신을 각각 고르세요. 예를 들어 Codex는 **local**, Claude Code는 기존 Herdr 머신 **lab**을 선택할 수 있습니다. **Install default**는 설치 당시 공통 대상을 사용합니다.
+업데이트가 적용되면 하단바 오른쪽에 `mod 1.6.0`이 보입니다. 사용량 막대를 눌러 **Sources**를 열고, Codex와 Claude Code가 읽을 머신을 각각 고르세요. 예를 들어 Codex는 **local**, Claude Code는 기존 Herdr 머신 **lab**을 선택할 수 있습니다. **Install default**는 설치 당시 공통 대상을 사용합니다.
 
 ## 기능
 
-Files에서 PNG·JPEG와 Markdown 파일을 누르면 문서 탭에 열립니다. 사진은 창에 맞게 표시되며 PNG 투명도와 JPEG 방향 정보를 지원합니다. Markdown은 제목, 표, 목록, 코드 블록을 읽기 화면으로 표시하며 Source 버튼으로 원문을 볼 수 있습니다. Ctrl+Enter로 오른쪽 분할에 엽니다.
+Files에서 파일을 한 번 클릭하면 선택하고, 더블클릭이나 `Enter`를 누르면 마지막으로 사용한 문서 창에서 엽니다. 같은 작업 공간에서 이미 열린 파일은 기존 탭으로 이동합니다. 상단 **Layout**에서 좌우·상하로 분할하면 각 문서 창에 파일 탭 줄이 생깁니다. 터미널만 있는 창에서는 첫 파일을 터미널 옆에 엽니다. **Refresh** 또는 목록의 `F5`로 펼친 폴더까지 새로 읽습니다. 선택한 파일에서 `Del`을 누르면 삭제 확인창이 열립니다.
+
+PNG·JPEG와 Markdown 파일도 문서 탭에서 열립니다. 사진은 창에 맞게 표시되며 PNG 투명도와 JPEG 방향 정보를 지원합니다. Markdown은 제목, 표, 목록, 코드 블록을 읽기 화면으로 표시하며 Source 버튼으로 원문을 볼 수 있습니다. Ctrl+Enter로 오른쪽 분할에 엽니다.
 
 | 기능 | 동작 | 코드 | 로그 |
 | --- | --- | --- | --- |
 | `usage` | 오른쪽에 Codex 막대와 Claude `W`·`F` 두 줄, 사용률과 초기화까지 남은 시간 표시 | `mods/herdr-kit-usage/` | `usage.jsonl` |
 | `transfer` | Files에 파일 드롭, 폴더 간 드래그 이동, 우클릭 다운로드·다운로드 후 열기, 전송 시 덮어쓰기 확인 | `mods/herdr-kit-files/` | `transfer.jsonl` |
 | `pdf` | 파일 링크를 `Ctrl+클릭`해 PDF·텍스트 탭 열기, PDF·Files 항목을 좌우로 드래그해 분할, Ctrl+휠 확대·축소, 고해상도 렌더링, 연속 세로 스크롤, 파일 자동 갱신, 텍스트 선택 | `mods/herdr-kit-pdf/`, `mods/herdr-kit-tabs/`, `mods/herdr-kit-links/` | `pdf.jsonl` |
-| `tabs` | 분할된 터미널이나 문서의 제목을 탭 줄에 드롭해 새 탭으로 이동, `Ctrl+W`로 현재 탭 닫기 | `mods/herdr-kit-pane/` | `tabs.jsonl` |
+| `tabs` | 상단 Layout으로 좌우·상하 분할과 한 창 확대·복원, 분할 창 제목을 탭 줄에 드롭해 새 탭으로 이동, `Ctrl+W`로 현재 탭 닫기 | `mods/herdr-kit-pane/` | `tabs.jsonl` |
 
 Files에서 파일을 우클릭하면 오른쪽 분할 열기, 잘라내기·복사, 저장 위치를 고르는 다운로드, 전체·상대 경로 복사, 이름 바꾸기와 영구 삭제 확인을 사용할 수 있습니다. 잘라내거나 복사한 파일은 같은 머신의 폴더 행 또는 루트 드롭 영역에 붙여넣습니다. 이름 충돌 시 기존 파일을 보존합니다. 영구 삭제는 선택한 개별 파일에 적용됩니다.
 

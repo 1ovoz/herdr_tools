@@ -1,4 +1,5 @@
 import copy
+from itertools import combinations
 import sys
 from pathlib import Path
 
@@ -8,7 +9,7 @@ import kit
 
 base_layout=Path(__file__).parent/'fixtures'/'main.json'
 source=kit.read_json(base_layout)
-for enabled in [(),('usage',),('transfer',),('pdf',),('tabs',),kit.FEATURES]:
+for enabled in (features for count in range(len(kit.FEATURES)+1) for features in combinations(kit.FEATURES,count)):
     layout=kit.make_layout(copy.deepcopy(source),enabled)
     nodes={node.get('id'):node for node in kit.nodes(layout)}
     assert ('herdr-kit-usage' in nodes)==('usage' in enabled)
@@ -19,8 +20,9 @@ for enabled in [(),('usage',),('transfer',),('pdf',),('tabs',),kit.FEATURES]:
         assert file_node['props']['pdf']==('pdf' in enabled)
     else:
         assert file_node['mod']=='files'
-    assert nodes['tabs']['content']['mod']==('herdr-kit-tabs' if 'pdf' in enabled else 'tabs')
-    assert ('herdr-kit-tabs' in kit.enabled_mods(enabled))==('pdf' in enabled)
+    custom_tabs = bool({'pdf','tabs'}.intersection(enabled))
+    assert nodes['tabs']['content']['mod']==('herdr-kit-tabs' if custom_tabs else 'tabs')
+    assert ('herdr-kit-tabs' in kit.enabled_mods(enabled))==custom_tabs
     assert ('herdr-kit-links' in layout.get('link_handlers', []))==('pdf' in enabled)
     headers=[node['content']['pane']['header']['content']['mod'] for node in nodes.values()
              if node.get('content',{}).get('pane',{}).get('header',{}).get('content',{}).get('mod') in ('pane','herdr-kit-pane')]
@@ -34,4 +36,4 @@ for enabled in [(),('usage',),('transfer',),('pdf',),('tabs',),kit.FEATURES]:
     else:
         assert 'herdr-kit-version' not in nodes
 assert source==kit.read_json(base_layout)
-print('Layout checks passed for each feature alone, all, and none; source is intact')
+print('Layout checks passed for all feature combinations; source is intact')

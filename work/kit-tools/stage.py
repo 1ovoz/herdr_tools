@@ -36,7 +36,6 @@ for folder in (files, pdf, tabs, usage, pane):
 shutil.copytree(work/"kit-version",kit/"mods"/"herdr-kit-version",dirs_exist_ok=True)
 
 main = read(source / "main.js")
-button = main[main.index("  button(id, label"):main.index("  renderMenu() {")]
 files_main = adapt(
     main,
     ('import { div, svg }', 'import { View, div, svg }'),
@@ -44,12 +43,10 @@ files_main = adapt(
     ('extends DocumentView', 'extends View'),
     ('    this.transfer = true;', '    this.transfer = Boolean(props()?.transfer);'),
     ('    this.pdf = true;', '    this.pdf = Boolean(props()?.pdf);'),
-    ('    if (this.mode === "pdf" || this.mode === "document") { this.initDocument(cx); return; }\n', ''),
-    ('    if(this.mode==="pdf" || this.mode==="document") return this.renderDocument(cx);\n', ''),
+    ('    if (this.mode === "pdf" || this.mode === "document" || this.mode === "group") { this.initDocument(cx); return; }\n', ''),
+    ('    if(this.mode==="pdf" || this.mode==="document" || this.mode==="group") return this.renderDocument(cx);\n', ''),
     ('personal-files', 'herdr-kit-files'),
-    (': /\\.(?:pdf|md|markdown|mdown|png|jpe?g)$/i.test(path) ?', ': this.pdf && /\\.(?:pdf|md|markdown|mdown|png|jpe?g)$/i.test(path) ?'),
     ('fileDocument(target.source,target.on)', 'fileDocument(target.source,target.on,this.transfer)'),
-    ('fileDocument(`${root}/${path}`,on)', 'fileDocument(`${root}/${path}`,on,this.transfer)'),
     ('if (this.current(context)) startDocumentDrag(doc);', 'if (this.pdf && this.current(context)) startDocumentDrag(doc);'),
     ('.when(Boolean(file),el=>el.child(this.button("download-preview"', '.when(this.transfer && Boolean(file),el=>el.child(this.button("download-preview"'),
     ('.when(!this.file,el=>el.child(div().id("upload-root")', '.when(this.transfer && !this.file,el=>el.child(div().id("upload-root")'),
@@ -69,18 +66,10 @@ write(files / "main.js", "// Adapted from Herdr Files (Apache-2.0).\n" + files_m
 
 document = adapt(
     read(source / "document-view.js"),
-    ('run, notify }', 'run, notify, openOverlay }'),
     ('export class DocumentView extends View {\n  initDocument(cx) {',
-     'export default class DocumentView extends View {\n  init(_props, cx) {'),
-    ('mode:p.mode };', 'mode:p.mode ?? "pdf" };\n    this.transfer = Boolean(p.transfer);'),
-    ('fileDocument(p.source,p.on??null)', 'fileDocument(p.source,p.on??null,this.transfer)'),
-    ('"personal-files"', '"herdr-kit-pdf"'),
-    ('  renderDocument(cx) {',
-     button + '''  job(requests) {
-    openOverlay({mod:"herdr-kit-files",kind:"dialog",width:520,height:300,props:{mode:"job",requests}});
-  }
-
-  render(cx) {'''),
+     'export default class DocumentView extends View {\n  init(_props,cx) { this.initDocument(cx); }\n  render(cx) { return this.renderDocument(cx); }\n  initDocument(cx) {'),
+    ('mod:"personal-files",kind:"dialog"', 'mod:"herdr-kit-files",kind:"dialog"'),
+    ('this.transfer = p.transfer ?? true;', 'this.transfer = Boolean(p.transfer);'),
     ('.when(!compact,el=>el.child(this.button("document-download"',
      '.when(this.transfer && !compact,el=>el.child(this.button("document-download"'),
     ('"Preview unavailable for this file. Use Download to open it."',
@@ -103,6 +92,8 @@ shutil.copy2(source / "document-flow.js", common / "document-flow.js")
 
 tabs_main = adapt(
     read(work / "personal-tabs" / "main.js"),
+    ('../personal-files/', './'),
+    ('"personal-tabs"', '"herdr-kit-tabs"'),
     ('personal-files', 'herdr-kit-pdf'),
     ('mod:"herdr-kit-pdf",kind:"window"', 'mod:"herdr-kit-files",kind:"window"'),
 )
@@ -122,11 +113,11 @@ link_source = work / "personal-terminal-links"
 write(links / "mod.json", json.dumps(json.loads(read(link_source / "mod.json")), indent=2) + "\n")
 link_main = adapt(
     read(link_source / "link.js"),
-    ('import { exec, notify, run }', 'import { exec, layout, notify, run, shared }'),
+    ('import { exec, notify }', 'import { exec, layout, notify, shared }'),
+    ('../personal-files/document-drag.js','./document-drag.js'),
     ('  if (link.kind !== "file" || !source.space)', '  if (shared("layout") !== "herdr-mod-kit" || link.kind !== "file" || !source.space)'),
-    ('  run("tab.new",', '''  const filesPanel = findFilesPanel(layout());
-  run("tab.new",'''),
-    ('mod:"personal-files"', 'mod:"herdr-kit-pdf"'),
+    ('  routeDocument({name,', '''  const filesPanel = findFilesPanel(layout());
+  routeDocument({name,'''),
     ('source:path,on:source.machine,mode:', 'source:path,on:source.machine,transfer:Boolean(filesPanel?.content?.props?.transfer),mode:'),
     ('    if (!path) {\n      notify', '    if (!path) {\n      console.error("[herdr-kit/pdf] link_resolution_failed");\n      notify'),
 )

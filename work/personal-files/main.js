@@ -1,6 +1,6 @@
 // A lazy file browser for the focused pane's folder, with bounded read-only previews.
 import { div, svg } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState, Input, InputState } from "gpui-base";
+import { v_flex, h_flex, Button, Editor, EditorState, Input, InputState } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, props, checking, appHome, openOverlay, closeOverlay, shared, setShared, run, layout, notify } from "herdr";
 import { bridge, jobId, uploadRequests } from "./actions.js";
 import { DocumentView } from "./document-view.js";
@@ -18,6 +18,7 @@ function location() {
 const key = () => JSON.stringify(location());
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
 const PER_FOLDER = 500, TOTAL = 5000;
+const CHANGE_DIALOG_HEIGHT = 210, JOB_DIALOG_HEIGHT = 300;
 const CLIPBOARD = "personal-files.clipboard";
 const FILE_ACTIONS = [
   {id:"open-side", label:"Open to the Side", feature:"pdf", key:"ctrl-enter", hint:"Ctrl+Enter"},
@@ -40,7 +41,7 @@ function menuTarget(root, on, relative, dir, name) {
     (!on && root.startsWith("//") && window()?.platform === "windows");
   const path = windows ? relative.replace(/\//g,"\\") : relative;
   const base = windows ? root.replace(/\//g,"\\").replace(/\\+$/, "") : root.replace(/\/+$/, "");
-  return {root, on, relative:path, source:relative ? base + (windows ? "\\" : "/") + path : root, dir, name};
+  return {root, on, path:relative, relative:path, source:relative ? base + (windows ? "\\" : "/") + path : root, dir, name};
 }
 
 function findNode(node,id) {
@@ -106,7 +107,7 @@ export default class Files extends DocumentView {
       }
       return;
     }
-    if (this.mode === "pdf" || this.mode === "document") { this.initDocument(cx); return; }
+    if (this.mode === "pdf" || this.mode === "document" || this.mode === "group") { this.initDocument(cx); return; }
     if (this.mode === "drop" || this.mode === "lift") {
       this.dropWidth=1280;this.dropHeight=800;
       this.dropFocus=cx.focus_handle();this.dropFocus.focus();
@@ -116,12 +117,10 @@ export default class Files extends DocumentView {
     }
     this.saved = new Map();
     this.treeFocus = cx.focus_handle();
-    for (const dir of [false,true]) {
-      const bindings = this.menuActions(dir).filter(a=>a.key).map(a=>({
-        keystroke:a.key, action:"personal-files-" + a.id, context:this.keyContext(dir)
-      }));
-      if (bindings.length) cx.bind_keys(bindings);
-    }
+    const bindings = this.shortcuts().map(a=>({
+      keystroke:a.key, action:"personal-files-" + a.id, context:this.keyContext()
+    }));
+    if (bindings.length) cx.bind_keys(bindings);
     this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {};
     this.dropFolder = null;
     if (!checking()) {
@@ -132,7 +131,7 @@ export default class Files extends DocumentView {
 
   job(requests) {
     if (!requests.length) return;
-    openOverlay({mod:"personal-files",kind:"dialog",width:520,height:300,props:{mode:"job",requests}});
+    openOverlay({mod:"personal-files",kind:"dialog",width:520,height:JOB_DIALOG_HEIGHT,props:{mode:"job",requests}});
   }
 
   upload(paths, directory, on) {
@@ -291,18 +290,26 @@ export default class Files extends DocumentView {
     return 42 + 30 * this.menuActions(dir).length + (dir ? 34 : 0);
   }
 
-  keyContext(dir) {
-    return "HerdrFiles" + (dir ? "Folder" : "File") + (this.transfer ? "Transfer" : "") + (this.pdf ? "Document" : "");
+  keyContext() {
+    return "HerdrFiles" + (this.transfer ? "Transfer" : "") + (this.pdf ? "Document" : "");
+  }
+
+  shortcuts() {
+    return [...FILE_ACTIONS,PASTE].filter(item=>item.key && this[item.feature]);
   }
 
   withShortcuts(el, target) {
     el = el.track_focus(this.treeFocus);
     if (!target) return el;
-    el = el.key_context(this.keyContext(target.dir));
-    for (const item of this.menuActions(target.dir)) {
-      if (item.key) el = el.on_action("personal-files-" + item.id, (_event,cx)=>{
+    el = el.key_context(this.keyContext());
+    for (const item of this.shortcuts()) {
+      el = el.on_action("personal-files-" + item.id, (_event,cx)=>{
+        const popup = this.mode === "menu";
+        const active = popup ? target : this.selected || target;
         cx.stop_propagation();
-        this.menuAction(item.id,target,cx);
+        if ((popup || this.current(this.context)) && this.menuActions(active.dir).includes(item)) {
+          this.menuAction(item.id,active,cx);
+        }
       });
     }
     return el;
@@ -311,9 +318,10 @@ export default class Files extends DocumentView {
   showMenu(target, cx) {
     cx.stop_propagation();
     this.selected = target;
+    this.openPane = focused()?.pane ?? this.openPane;
     this.treeFocus.focus();
     openOverlay({mod:"personal-files",kind:"popup",width:310,height:this.menuHeight(target.dir),
-      props:{mode:"menu",target,transfer:this.transfer,pdf:this.pdf}});
+      props:{mode:"menu",target,transfer:this.transfer,pdf:this.pdf,openPane:this.openPane}});
   }
 
   pasteSource(target) {
@@ -334,7 +342,7 @@ export default class Files extends DocumentView {
         startDocumentDrag(fileDocument(target.source,target.on),id === "open-side" ? "right" : "left");
         break;
       case "view-file":
-        openDocument(fileDocument(target.source,target.on),cx);
+        openDocument(fileDocument(target.source,target.on),cx,props()?.openPane ?? this.openPane);
         break;
       case "cut":
       case "copy":
@@ -351,7 +359,7 @@ export default class Files extends DocumentView {
         break;
       case "rename":
       case "delete":
-        openOverlay({mod:"personal-files",kind:"dialog",width:440,height:210,
+        openOverlay({mod:"personal-files",kind:"dialog",width:440,height:CHANGE_DIALOG_HEIGHT,
           props:{mode:id,target,transfer:this.transfer}});
         break;
       case "download":
@@ -395,19 +403,41 @@ export default class Files extends DocumentView {
     });
   }
 
+  dialogButton(id, label, action, style = "secondary") {
+    const t = theme(), primary = style === "primary", danger = style === "danger";
+    return Button.new(id).accessibility_label(label).disabled(this.busy)
+      .h_flex().items_center().justify_center().flex_none().h(34).min_w(80).px(12)
+      .whitespace_nowrap().rounded(6).border_1().font_medium()
+      .bg(primary ? t.solid : t.raised).text_color(primary ? t.solid_foreground : danger ? t.ansi1 : t.foreground)
+      .border_color(primary ? t.solid : danger ? t.ansi1 : t.input)
+      .focus(s=>s.border_color(t.accent))
+      .when(this.busy, el=>el.opacity(0.55))
+      .when(!this.busy, el=>el.cursor_pointer().hover(s=>primary ? s.opacity(0.88) : s.bg(t.hover)))
+      .on_click((_e,cx)=>action(cx)).child(label);
+  }
+
+  renderDialog(height, title, body, actions) {
+    const t = theme();
+    return v_flex().w_full().h(height).max_h_full().min_h(0).p(16).gap(10)
+      .bg(t.popover).text_color(t.foreground).text_size(13)
+      .child(div().flex_none().text_size(16).font_semibold().child(title))
+      .child(body.id("file-dialog-body").w_full().flex_1().min_h(0).gap(8).overflow_y_scrollbar())
+      .child(actions.w_full().flex_none().items_center().justify_end().gap(8));
+  }
+
   renderChange() {
     const t = theme(), {target,overlay} = props(), rename = this.mode === "rename";
-    const label = rename ? "Rename" : "Delete permanently";
-    return v_flex().w_full().min_h(0).p(16).gap(9).bg(t.popover).text_color(t.foreground).text_size(13)
-      .child(div().font_semibold().child(rename ? "Rename file" : "Permanently delete this file?"))
-      .child(div().truncate().tooltip(target.source).child((target.on ? target.on + " · " : "") + target.source))
-      .when(rename, el=>el.child(Input.new(this.nameInput).h(34).px(9).rounded(5).border_1()
+    const body = v_flex()
+      .child(div().flex_none().truncate().tooltip(target.source).child((target.on ? target.on + " · " : "") + target.source))
+      .when(rename, el=>el.child(Input.new(this.nameInput).flex_none().h(34).px(9).items_center().rounded(5).border_1()
         .border_color(t.accent).bg(t.background).text_color(t.foreground)))
-      .when(!rename, el=>el.child(div().text_color(t.muted).child("This file cannot be recovered from the Recycle Bin.")))
-      .when(Boolean(this.error), el=>el.child(div().text_color(t.blocked).child(this.error)))
-      .child(h_flex().pt(4).justify_end().gap(8)
-        .child(this.button("cancel-change","Cancel",()=>closeOverlay(overlay),this.busy))
-        .child(this.button("confirm-" + this.mode,label,cx=>this.submitChange(cx),this.busy)));
+      .when(!rename, el=>el.child(div().flex_none().text_color(t.muted).child("This file cannot be recovered from the Recycle Bin.")))
+      .when(Boolean(this.error), el=>el.child(div().flex_none().text_color(t.blocked).child(this.error)));
+    const actions = h_flex()
+      .child(this.dialogButton("cancel-change","Cancel",()=>closeOverlay(overlay)))
+      .child(this.dialogButton("confirm-" + this.mode, rename ? "Rename" : "Delete permanently",
+        cx=>this.submitChange(cx), rename ? "primary" : "danger"));
+    return this.renderDialog(CHANGE_DIALOG_HEIGHT, rename ? "Rename file" : "Permanently delete this file?", body, actions);
   }
 
   async pollProgress(cx) {
@@ -477,17 +507,15 @@ export default class Files extends DocumentView {
       ({copy:"Copy file",move:"Move file",folder:"Open Downloads folder"})[current?.action] || "Download";
     const cancelled = done && this.result?.cancelled;
     const progress=this.progress;
-    return v_flex().size_full().p(18).gap(12).bg(t.popover).text_color(t.foreground).text_size(13)
-      .child(div().font_semibold().child(cancelled?"Cancelled":done?"Completed":title))
-      .child(div().text_color(t.muted).truncate().child(current?.source || this.result?.path || ""))
-      .child(div().text_color(this.error?t.blocked:t.muted).child(this.error || (this.busy ? (progress ? `${Math.round(progress.done/Math.max(1,progress.total)*100)}% · ${(progress.done/1048576).toFixed(1)} / ${(progress.total/1048576).toFixed(1)} MB` : "Connecting…") : cancelled?"":done?(this.result?.message || `${this.index} operation(s) completed`):"Ready")))
-      .when(current?.action==="upload",el=>el.child(div().text_color(t.dim).truncate().child(`Folder: ${current.directory}`)))
-      .child(div().flex_1())
-      .child(h_flex().w_full().gap(10)
-        .when(this.collision,el=>el.child(this.button("replace-file","Replace file",cx=>this.work(cx,true))))
-        .when(Boolean(this.error)&&!this.collision,el=>el.child(this.button("retry-file","Retry",cx=>this.work(cx))))
-        .child(div().flex_1())
-        .child(this.button("close-job",this.busy?"Working…":"Close",()=>closeOverlay(props().overlay),this.busy)));
+    const body = v_flex()
+      .child(div().flex_none().text_color(t.muted).truncate().child(current?.source || this.result?.path || ""))
+      .child(div().flex_none().text_color(this.error?t.blocked:t.muted).child(this.error || (this.busy ? (progress ? `${Math.round(progress.done/Math.max(1,progress.total)*100)}% · ${(progress.done/1048576).toFixed(1)} / ${(progress.total/1048576).toFixed(1)} MB` : "Connecting…") : cancelled?"":done?(this.result?.message || `${this.index} operation(s) completed`):"Ready")))
+      .when(current?.action==="upload",el=>el.child(div().flex_none().text_color(t.dim).truncate().child(`Folder: ${current.directory}`)));
+    const actions = h_flex()
+      .child(this.dialogButton("close-job",this.busy ? "Working…" : "Close",()=>closeOverlay(props().overlay)))
+      .when(this.collision, el=>el.child(this.dialogButton("replace-file","Replace file",cx=>this.work(cx,true),"danger")))
+      .when(Boolean(this.error) && !this.collision, el=>el.child(this.dialogButton("retry-file","Retry",cx=>this.work(cx),"primary")));
+    return this.renderDialog(JOB_DIALOG_HEIGHT, cancelled ? "Cancelled" : done ? "Completed" : title, body, actions);
   }
 
   watch(root, cx) {
@@ -513,7 +541,18 @@ export default class Files extends DocumentView {
     if (entries.length > PER_FOLDER || used + entries.length > TOTAL) this.limited = true;
   }
 
-  refresh(cx) {
+  entryAt(path) {
+    const slash = path.lastIndexOf("/");
+    const parent = slash < 0 ? "" : path.slice(0,slash);
+    return this.entries.get(parent)?.find(entry=>entry.name === path.slice(slash + 1));
+  }
+
+  requestRefresh(cx) {
+    this.refresh(cx,true);
+    cx.notify();
+  }
+
+  refresh(cx, queueIfBusy = false) {
     const { cwd, on } = location(), next = key();
     if (next !== this.context?.key) {
       this.clearFileDrag(cx);
@@ -522,10 +561,14 @@ export default class Files extends DocumentView {
       const saved = this.saved.get(next);
       this.context = { key: next, cwd, on }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
       this.pending = new Set(); this.marks = {}; this.show(null); this.watched = null; this.error = null; this.limited = false;
-      this.loading = false;
+      this.loading = false; this.refreshAgain = false;
       if (saved?.file) this.show(saved.file, cx);
     }
-    if (!cwd || this.loading) return;
+    if (!cwd) return;
+    if (this.loading) {
+      if (queueIfBusy) this.refreshAgain = true;
+      return;
+    }
     const context = this.context;
     this.loading = true;
     this.limited = false;
@@ -533,8 +576,15 @@ export default class Files extends DocumentView {
       try {
         for (const path of ["", ...this.folders]) {
           if (!this.current(context)) return;
+          if (path && (!this.folders.has(path) || !this.entryAt(path)?.dir)) {
+            this.folders.delete(path);
+            this.entries.delete(path);
+            continue;
+          }
           await this.loadFolder(path, context);
         }
+        if (!this.current(context)) return;
+        if (this.selected?.path && this.entryAt(this.selected.path)?.dir !== this.selected.dir) this.selected = null;
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(() => null);
         const marks = {};
         if (top?.code === 0) {
@@ -548,7 +598,16 @@ export default class Files extends DocumentView {
         if (!this.current(context)) return;
         this.marks = marks; this.error = null; this.watch(cwd, cx);
       } catch (e) { if (this.current(context)) this.error = String(e); }
-      finally { if (this.context === context) this.loading = false; cx.notify(); }
+      finally {
+        if (this.context === context) {
+          this.loading = false;
+          if (this.refreshAgain) {
+            this.refreshAgain = false;
+            this.refresh(cx);
+          }
+        }
+        cx.notify();
+      }
     });
   }
 
@@ -595,6 +654,11 @@ export default class Files extends DocumentView {
     });
   }
 
+  openFile(target, cx) {
+    if (this.pdf) openDocument(fileDocument(target.source,target.on),cx,this.openPane);
+    else this.show(target.path,cx);
+  }
+
   rows(prefix, depth, out, t) {
     const root=this.root,on=this.on;
     if (out.length >= TOTAL || depth > 40) return out;
@@ -604,16 +668,19 @@ export default class Files extends DocumentView {
       const target = menuTarget(root,on,path,entry.dir,entry.name);
       out.push(h_flex().id(`file-${path}`).h(28).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().hover(s => s.bg(this.dropFolder === path ? t.selected : t.hover))
         .when(this.selected?.source === target.source && this.selected?.on === on,el=>el.bg(t.selected))
-        .on_click((_e, cx) => {
-          if(this.fileDragged||this.root!==root||this.on!==on)return;
-          entry.dir ? this.toggle(path, cx) : /\.(?:pdf|md|markdown|mdown|png|jpe?g)$/i.test(path) ? openDocument(fileDocument(`${root}/${path}`,on),cx) : this.show(path, cx);
+        .on_click((event, cx) => {
+          if (this.fileDragged || this.root !== root || this.on !== on) return;
+          if (entry.dir && event.click_count === 1) this.toggle(path,cx);
+          if (!entry.dir && event.click_count === 2) this.openFile(target,cx);
         })
         .on_mouse_down("left",(event,cx)=>{
+          cx.stop_propagation();
+          this.openPane = focused()?.pane ?? this.openPane;
           this.selected = target;
           this.treeFocus.focus();
           cx.notify();
           this.fileDragged=false;
-          this.documentPress=entry.dir || (!this.transfer && !this.pdf) ? null : {point:event.position,parent:prefix,context:this.context,doc:fileDocument(`${root}/${path}`,on)};
+          this.documentPress=entry.dir || (!this.transfer && !this.pdf) ? null : {point:event.position,parent:prefix,context:this.context,doc:fileDocument(target.source,target.on)};
         })
         .when(this.transfer && entry.dir,el=>this.fileDropTarget(el,path,t))
         .when(this.transfer || (this.pdf && !entry.dir),el=>el.on_mouse_down("right",(_e,cx)=>this.showMenu(target,cx)))
@@ -631,7 +698,7 @@ export default class Files extends DocumentView {
     if(this.mode==="menu") return this.renderMenu();
     if(this.mode==="rename" || this.mode==="delete") return this.renderChange();
     if(this.mode==="job") return this.renderJob();
-    if(this.mode==="pdf" || this.mode==="document") return this.renderDocument(cx);
+    if(this.mode==="pdf" || this.mode==="document" || this.mode==="group") return this.renderDocument(cx);
     if(this.mode==="drop") return this.renderDrop();
     if(this.mode==="lift") return this.renderLift();
     const changed=shared("personal-files.changed");
@@ -641,9 +708,11 @@ export default class Files extends DocumentView {
         if (this.selected?.source === changed.source) this.selected = null;
         if (this.file && menuTarget(this.root,this.on,this.file,false,"").source === changed.source) this.show(null);
       }
-      this.changed=changeId; this.refresh(cx);
+      const newChange = changeId !== this.changed;
+      this.changed=changeId; this.refresh(cx,newChange);
     }
     const t = theme();
+    this.openPane = focused()?.pane ?? this.openPane;
     const root=this.root,on=this.on,file=this.file;
     const rootTarget = root ? menuTarget(root,on,"",true,root) : null;
     return v_flex().id("files").relative().size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
@@ -664,9 +733,11 @@ export default class Files extends DocumentView {
         this.clearFileDrag(cx);
         if (this.current(context)) startDocumentDrag(doc);
       })
-      .child(this.withShortcuts(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border),this.selected || rootTarget)
+      .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .when(Boolean(this.file), el => el.child(div().id("files-back").w(20).cursor_pointer().text_color(t.muted).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("←")))
         .child(div().font_semibold().child("Files"))
+        .when(root && !file,el=>el.child(this.button("files-refresh",this.loading ? "Refreshing…" : "Refresh",cx=>this.requestRefresh(cx))
+          .tooltip("Refresh this folder and expanded folders (F5)")))
         .when(Boolean(file),el=>el.child(this.button("download-preview","Download",()=>this.job([{action:"download",source:`${root}/${file}`,on,job:jobId()}]))))
         .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.file ?? this.root?.split(/[\\/]/).pop() ?? "")))
       .when(!this.file,el=>el.child(div().id("upload-root").px(12).py(8).text_size(11).text_color(t.muted).bg(t.surface)
@@ -677,7 +748,17 @@ export default class Files extends DocumentView {
         .when(Boolean(root),target=>this.fileDropTarget(target,"",t))
         .on_drop((event,cx)=>{cx.stop_propagation();if(root)this.upload(event.paths,root,on);})
         .child(this.fileDragged && this.documentPress ? "Drop here to move to the current root folder" : "Drop files here or onto a folder to upload")))
-      .when(!this.file, el => el.child(v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6)
+      .when(!this.file, el => el.child(this.withShortcuts(v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6),rootTarget)
+        .on_mouse_down("left",(_event,cx)=>{this.selected=rootTarget; this.treeFocus.focus(); cx.notify();})
+        .on_key_down((event,cx)=>{
+          if (event.keystroke === "f5" && root) {
+            cx.stop_propagation();
+            this.requestRefresh(cx);
+          } else if (event.keystroke === "enter" && this.selected && !this.selected.dir) {
+            cx.stop_propagation();
+            if (!event.is_held) this.openFile(this.selected,cx);
+          }
+        })
         .when(this.transfer && rootTarget,tree=>tree.on_mouse_down("right",(_e,cx)=>this.showMenu(rootTarget,cx)))
         .on_drop((event,cx)=>{cx.stop_propagation();if(root)this.upload(event.paths,root,on);})
         .children(this.rows("", 0, [], t))

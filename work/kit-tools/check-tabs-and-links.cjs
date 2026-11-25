@@ -27,7 +27,8 @@ const sandbox = {
   setShared: (key, value) => storage.set(key, value),
   spaces: () => [fakeSpace],
   panes: () => panes,
-  jobId: () => 'fixture-id',
+  jobId: (()=>{ let id=0; return ()=> 'fixture-'+(++id); })(),
+  focused: () => ({space:'s1',tab:'t1',pane:'p1'}),
   notify: () => {},
   run: (name, args) => {
     calls.push({ name, args });
@@ -42,6 +43,8 @@ const sandbox = {
 };
 
 (async () => {
+  const {routeDocument,liftPane,registerDocument}=load('herdr-kit-files/document-drag.js',['routeDocument','liftPane','registerDocument'],sandbox);
+  sandbox.routeDocument=routeDocument;
   const { handleLink } = load('herdr-kit-links/link.js', ['handleLink'], sandbox);
   const click = { link:{ kind:'file', raw:'file:///tmp/check.pdf', path:null }, source:{ machine:'lab', space:'s1', tab:'t1' } };
   assert.equal(await handleLink(click),'handled');
@@ -53,11 +56,11 @@ const sandbox = {
   assert.equal(await handleLink({source:local,link:{kind:'file',raw:'file://files.example/document.pdf'}}),'handled');
   assert.equal(calls.length,previous);
   assert.equal(await handleLink({source:local,link:{kind:'file',raw:'file:///C:/docs/a.pdf',path:'C:/docs/a.pdf'}}),'handled');
-  assert.equal(calls.at(-1).args.props.source,'C:/docs/a.pdf');
+  const groups=storage.get('herdr-kit-pdf.file-groups');
+  assert.ok(Object.values(groups).some(group=>group.docs.some(doc=>doc.source==='C:/docs/a.pdf')));
   activeLayout = 'other-layout';
   assert.equal(await handleLink(click),'pass');
 
-  const { liftPane, registerDocument } = load('herdr-kit-files/document-drag.js', ['liftPane','registerDocument'], sandbox);
   const cx = { sleep: async () => {} };
   const view = { source:'/tmp/check.pdf', mode:'pdf', name:'check.pdf', split:true, id:'doc-1', transfer:true, position:{ anchor:[1,0], zoom:1 } };
   registerDocument(view,'t1','p2',null);

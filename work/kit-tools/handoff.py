@@ -16,7 +16,8 @@ source_files = {
     '': ['HANDOFF.md', 'README.md', '.gitignore', '.gitattributes'],
     'docs': ['remote-work.md'],
     'docs/screenshots': ['files-menu.png', 'files-drag.png', 'pdf-split.png', 'local-usage.png',
-                         'usage-sources.png', 'markdown-preview.png', 'image-preview.png'],
+                         'usage-sources.png', 'markdown-preview.png', 'image-preview.png',
+                         'file-groups.png', 'layout-menu.png', 'delete-confirmation.png'],
     'work': ['package-publish-notes.md'],
     'work/kit-tools': ['stage.py', 'release.py', 'handoff.py', 'verify.py',
                        'check-layout.py', 'check-tabs-and-links.cjs', 'check-file-actions.py', 'test_install.py', 'windows-kit.sh',
@@ -29,8 +30,8 @@ source_files = {
     'work/lab-usage': ['mod.json', 'main.js', 'collect.py', 'codex.svg', 'test_collect.py','test_sources.mjs'],
     'work/personal-files': ['mod.json', 'main.js', 'actions.js', 'bridge.py','file_host.py', 'document-drag.js',
                             'document-flow.js', 'document-view.js', 'pdf-geometry.js', 'fixture.pdf',
-                            'test_bridge.py', 'test_pdf.py', 'test_ui.mjs', 'test_flow.mjs', 'test_pdf_ui.mjs'],
-    'work/personal-tabs': ['mod.json', 'main.js'],
+                            'test_bridge.py', 'test_pdf.py', 'test_ui.mjs', 'test_flow.mjs', 'test_pdf_ui.mjs', 'test_groups.mjs'],
+    'work/personal-tabs': ['mod.json', 'main.js', 'test_layout.mjs'],
     'work/personal-pane': ['mod.json', 'main.js'],
     'work/personal-terminal-links': ['mod.json', 'link.js'],
 }
@@ -50,17 +51,19 @@ def main():
                     raise ValueError(f'Rebuild the installer after changing {name}')
                 sources.append(vendor_file)
     sources.append(installer)
+    installer_sum = f'{sha256(installer.read_bytes()).hexdigest()}  {installer.name}\n'
     with ZipFile(archive, 'w', compression=ZIP_DEFLATED, compresslevel=8) as bundle:
         for path in sorted(sources):
             bundle.write(path, 'Herdr-Mod-Kit-Dev/' + path.relative_to(root).as_posix())
+        bundle.writestr('Herdr-Mod-Kit-Dev/outputs/SHA256SUMS', installer_sum)
     with ZipFile(archive) as bundle:
         if bundle.testzip() is not None:
             raise ValueError('Handoff ZIP integrity check failed')
         print(f'{archive.name}: {len(bundle.namelist())} entries')
     shutil.copyfile(root / 'HANDOFF.md', out / f'Herdr-개발-인계-v{VERSION}.md')
     with (out/'SHA256SUMS').open('w',encoding='ascii',newline='\n') as sums:
-        for path in (installer,archive):
-            sums.write(f'{sha256(path.read_bytes()).hexdigest()}  {path.name}\n')
+        sums.write(installer_sum)
+        sums.write(f'{sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n')
 
 
 if __name__ == '__main__':

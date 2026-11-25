@@ -1,6 +1,8 @@
 import { View, div, svg, image } from "gpui-kit";
-import { h_flex, ScrollHandle } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
+import { h_flex, v_flex, ScrollHandle } from "gpui-base";
+import { spaces, panes, props, run, openOverlay, closeOverlay, theme, window, shared, layout, settings } from "herdr";
+import { attachGroup } from "../personal-files/document-drag.js";
+import { jobId } from "../personal-files/actions.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -28,12 +30,75 @@ function label(tab, lead) {
 }
 
 export default class Tabs extends View {
-  init() {
+  init(_props, cx) {
+    if (props()?.mode === "layout") {
+      this.layoutIndex = 0;
+      this.layoutFocus = cx.focus_handle();
+      this.layoutFocus.focus();
+      return;
+    }
     this.pressed = null;
     this.scroll = ScrollHandle.new();
     try { this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}"); } catch { this.panels = {}; }
     if (!this.panels || typeof this.panels !== "object" || Array.isArray(this.panels)) this.panels = {};
     this.swipe = { acc: 0, steps: 0, at: 0, last: 0 };
+  }
+
+  chooseLayout(action) {
+    const target = props();
+    closeOverlay(target.overlay);
+    const space = spaces().find(s => s.active);
+    if (!space?.tabs.some(t => t.active && t.id === target.tab)) return;
+    const list = panes().filter(p => p.tab === target.tab);
+    const pane = list.find(p => p.pane === target.pane);
+    if (!pane) return;
+    const zoomed = list.find(p => p.zoomed);
+    if (action === "restore") {
+      if (zoomed) run("pane.zoom", { pane: zoomed.pane });
+      return;
+    }
+    if (action === "single") {
+      if (!zoomed && list.length > 1) run("pane.zoom", { pane: pane.pane });
+      return;
+    }
+    if (zoomed) run("pane.zoom", { pane: zoomed.pane });
+    const args = { pane: pane.pane, direction: action };
+    const files = find(layout(), "files")?.content;
+    const standalone = files?.mod === "personal-files";
+    if (!(files?.props?.pdf ?? standalone)) {
+      run("pane.split", args);
+      return;
+    }
+    const group = { mode: "group", groupId: jobId(), transfer: files?.props?.transfer ?? standalone,
+      anchorTab: target.tab };
+    const before = new Set(list.map(p => p.pane));
+    run("pane.split", { ...args, mod: "personal-files", props: group });
+    const created = panes().filter(p => p.tab === target.tab && p.mod === "personal-files" && !before.has(p.pane));
+    if (created.length === 1) attachGroup(group, created[0]);
+  }
+
+  layoutMenu() {
+    const t = theme();
+    const zoomed = panes().some(p => p.tab === props().tab && p.zoomed);
+    const rows = [
+      zoomed ? ["restore", "unzoom", "Restore split view"] : ["single", "zoom", "Single pane view"],
+      ["right", "split-right", "Split left / right"],
+      ["down", "split-down", "Split top / bottom"]
+    ];
+    return v_flex().id("layout-menu").track_focus(this.layoutFocus).w_full().p(5).bg(t.popover)
+      .on_key_down((e, cx) => {
+        if (e.key === "down") this.layoutIndex = (this.layoutIndex + 1) % rows.length;
+        else if (e.key === "up") this.layoutIndex = (this.layoutIndex + rows.length - 1) % rows.length;
+        else if (e.key === "enter") this.chooseLayout(rows[this.layoutIndex][0]);
+        else return;
+        cx.stop_propagation(); cx.notify();
+      })
+      .child(div().px(8).py(4).text_size(11).text_color(t.dim).child("Active pane"))
+      .children(rows.map(([action, icon, name], i) => h_flex().id(`layout-${action}`).h(30).px(8).gap(9)
+        .rounded(6).items_center().text_size(12.8).text_color(t.foreground)
+        .when(i === this.layoutIndex, el => el.bg(t.selected)).hover(el => el.bg(t.hover))
+        .on_click(() => this.chooseLayout(action))
+        .child(svg(`mods/pane/${icon}.svg`).size(14)).child(name)));
   }
 
   // One tab per wheel notch. A touchpad or smooth-scrolling mouse sends many
@@ -88,6 +153,7 @@ export default class Tabs extends View {
   }
 
   render() {
+    if (props()?.mode === "layout") return this.layoutMenu();
     const t = theme();
     const space = spaces().find(p => p.active);
     const shown = space?.tabs ?? [];
@@ -143,6 +209,10 @@ export default class Tabs extends View {
         .when(c.active, el => el.child(div().id(`close-${c.id}`).text_color(t.dim).on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); run("tab.close", { id: c.id }); }).child(svg("mods/pane/close.svg").size(12))));
     };
     const root = layout(), sidebar = find(root, "sidebar"), w = window();
+    const currentPanes = panes().filter(p => p.tab === selected);
+    const target = currentPanes.find(p => p.zoomed) ?? currentPanes.find(p => p.focused)
+      ?? currentPanes.find(p => p.pane === this.layoutPane) ?? currentPanes[0];
+    this.layoutPane = target?.pane;
     // Old saved rails and a dragged-narrow sidebar can be smaller than the window buttons.
     const lightsPadding = w?.platform === "macos" && w.titlebar === "none" && !w.fullscreen && root?.traffic_lights
       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
@@ -167,6 +237,12 @@ export default class Tabs extends View {
         .on_size_change((_size, cx) => { if (active >= 0) { this.scroll.scroll_to_item(active); cx.notify(); } })
         .children(shown.map(item)))
       .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
+      .when(Boolean(target), el => el.child(h_flex().id("pane-layout").h(26).px(8).gap(5).flex_none()
+        .items_center().rounded(6).text_size(12).text_color(t.muted).hover(s => s.bg(t.hover))
+        .tooltip("Choose a layout for the active pane").on_mouse_down("left", stop)
+        .on_click(() => openOverlay({ mod: find(root, "tabs")?.content?.mod ?? "personal-tabs", kind: "popup", width: 182, height: 126,
+          props: { mode: "layout", tab: selected, pane: target.pane } }))
+        .child(svg("mods/pane/split-right.svg").size(14)).child("Layout")))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))

@@ -4,9 +4,9 @@ Windows용 Herdr에서 파일을 옮기고 PDF와 코드를 나란히 읽으며 
 
 ## Windows 설치 및 업데이트
 
-[Windows x64 설치 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Windows-x64-v1.5.0.zip) · [개발 인계 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Dev-v1.5.0.zip) · [SHA-256](outputs/SHA256SUMS)
+[Windows x64 설치 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Windows-x64-v1.6.0.zip) · [개발 인계 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Dev-v1.6.0.zip) · [SHA-256](outputs/SHA256SUMS)
 
-Herdr 데스크톱 0.1.17과 Windows x64 Python 3.10 이상이 있는 PC에서 새 ZIP을 별도 폴더에 모두 풀고 `Herdr-Mod-Kit/Install-Windows.cmd`를 실행하세요. v1.0 또는 v1.4.0이 설치된 PC에서도 같은 순서로 업데이트할 수 있습니다. 설치 후 하단바 오른쪽에 `mod 1.5.0`이 표시됩니다. 업그레이드는 기존 기능 선택, 사용량 머신 및 키 설정을 보존합니다. 새 설치의 사용량 기본값은 `local`입니다. 설치 후 `Diagnose-Windows.cmd`로 확인할 수 있습니다.
+Herdr 데스크톱 0.1.17과 Windows x64 Python 3.10 이상이 있는 PC에서 새 ZIP을 별도 폴더에 모두 풀고 `Herdr-Mod-Kit/Install-Windows.cmd`를 실행하세요. v1.4.0 또는 v1.5.0이 설치된 PC에서도 같은 순서로 업데이트할 수 있습니다. 설치 후 하단바 오른쪽에 `mod 1.6.0`이 표시됩니다. 업그레이드는 기존 기능 선택, 사용량 머신 및 키 설정을 보존합니다. 새 설치의 사용량 기본값은 `local`입니다. 설치 후 `Diagnose-Windows.cmd`로 확인할 수 있습니다.
 
 직접 편집한 설치 파일과 새 파일이 충돌하면 설치기가 해당 경로를 표시하고 중단합니다. 수정본을 별도 위치에 보관하고 해당 경로를 비운 뒤 다시 실행하세요. 실행 중인 앱이 변경할 파일을 계속 잠그면 Herdr를 닫고 재실행하세요. SSH 머신 등록과 Windows의 기존 `main` 레이아웃은 이 설치기의 관리 대상 밖에 있습니다.
 
@@ -22,9 +22,21 @@ py -3 -X utf8 work/herdr-mod-kit/kit.py diagnose
 
 `local`은 Windows 사용자의 Codex 로그인으로 사용량을 조회합니다. 개발·테스트 명령과 배포 절차는 [인계 문서](HANDOFF.md), 다른 PC에서 같은 체크아웃을 여는 방법은 [WSL 원격 작업 안내](docs/remote-work.md)에 있습니다.
 
-## Files 우클릭 메뉴
+## 분할 창과 파일 탭
 
-파일 행을 우클릭해 다음 작업을 실행할 수 있습니다. 단축키는 Files에서 대상을 선택했을 때 사용합니다.
+상단 오른쪽 **Layout**에서 좌우 또는 상하로 분할하면 문서 창마다 별도의 파일 탭 줄이 생깁니다. Files에서 파일을 한 번 클릭해 선택하고, 더블클릭이나 `Enter`로 엽니다. 새 파일은 마지막으로 포커스한 문서 창에 추가됩니다. 같은 작업 공간에서 같은 머신의 같은 파일을 다시 열면 기존 탭으로 이동합니다. 터미널만 있는 창에서 처음 열 때는 실행 중인 터미널 옆에 문서 창이 생깁니다.
+
+파일 탭의 **×**는 해당 파일 하나를 닫습니다. **Single pane view**로 한 창을 크게 보고 **Restore split view**로 분할 화면에 돌아갈 수 있습니다.
+
+![왼쪽의 README.md와 오른쪽의 catalog.py가 각각 독립된 파일 탭 줄에 열린 화면](docs/screenshots/file-groups.png)
+
+![상단 Layout 메뉴의 현재 창 확대와 좌우·상하 분할 선택지](docs/screenshots/layout-menu.png)
+
+## Files 새로고침과 우클릭 메뉴
+
+Files 헤더의 **Refresh** 또는 목록에서 `F5`를 누르면 현재 루트와 펼쳐 둔 폴더를 다시 읽습니다. 파일을 선택하고 `Del`을 누르면 경로가 표시된 삭제 확인창이 열립니다. 파일 행을 우클릭해 다음 작업을 실행할 수 있습니다. 단축키는 Files에서 대상을 선택했을 때 사용합니다.
+
+![NOTES.md에서 Del을 눌러 연 삭제 확인창과 오른쪽 아래의 취소·삭제 버튼](docs/screenshots/delete-confirmation.png)
 
 | 작업 | 단축키 | 동작 |
 | --- | --- | --- |
@@ -53,11 +65,11 @@ PDF 위에서 `Ctrl`을 누르고 휠을 위로 돌리면 확대되고, 아래�
 
 ## Markdown과 사진
 
-Files에서 `.md`, `.markdown`, `.mdown`을 누르면 제목·목록·표·코드 블록이 있는 읽기 화면이 열립니다. **Source**와 **Preview**로 원문과 미리보기를 전환할 수 있습니다. 외부 이미지와 HTML은 자동으로 불러오지 않습니다.
+Files에서 `.md`, `.markdown`, `.mdown`을 더블클릭하면 제목·목록·표·코드 블록이 있는 읽기 화면이 열립니다. **Source**와 **Preview**로 원문과 미리보기를 전환할 수 있습니다. 외부 이미지와 HTML은 자동으로 불러오지 않습니다.
 
 ![Markdown 표와 PowerShell 코드 블록을 표시한 Herdr](docs/screenshots/markdown-preview.png)
 
-PNG·JPG·JPEG 파일도 클릭하면 새 탭에서 창 크기에 맞춰 열립니다. **Ctrl+Enter**로 옆에 열 수 있습니다. PNG 투명도와 JPEG의 EXIF 회전을 지원합니다. 미리보기는 원본을 보존하고 긴 변을 최대 2560픽셀로 표시합니다. 파일당 128 MiB, 1억 픽셀까지 지원합니다.
+PNG·JPG·JPEG 파일도 더블클릭하면 문서 탭에서 창 크기에 맞춰 열립니다. **Ctrl+Enter**로 옆에 열 수 있습니다. PNG 투명도와 JPEG의 EXIF 회전을 지원합니다. 미리보기는 원본을 보존하고 긴 변을 최대 2560픽셀로 표시합니다. 파일당 128 MiB, 1억 픽셀까지 지원합니다.
 
 ![저장소의 pdf-split.png를 이미지 탭에서 열어 본 모습](docs/screenshots/image-preview.png)
 
