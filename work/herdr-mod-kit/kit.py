@@ -16,7 +16,7 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parent
-VERSION = '1.7.0'
+VERSION = '1.8.0'
 FEATURES = ('usage', 'transfer', 'pdf', 'tabs')
 MODS = {'usage':'herdr-kit-usage', 'transfer':'herdr-kit-files', 'pdf':'herdr-kit-pdf', 'tabs':'herdr-kit-pane'}
 TABS_MOD = 'herdr-kit-tabs'

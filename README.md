@@ -1,16 +1,22 @@
 # Herdr Tools
 
-Windows용 Herdr에서 파일을 옮기고 PDF와 코드를 나란히 읽으며 Codex 주간 사용량을 확인하는 모드 모음입니다. 아래 화면은 Windows용 Herdr 0.1.17에서 실행한 모드입니다.
+Windows용 Herdr에서 파일을 옮기고 PDF와 코드를 나란히 읽으며 Codex 주간 사용량을 확인하는 모드 모음입니다. 화면은 Windows용 Herdr 0.1.17과 0.1.18에서 캡처했습니다.
 
 ## Windows 설치 및 업데이트
 
-[Windows x64 설치 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Windows-x64-v1.7.0.zip) · [개발 인계 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Dev-v1.7.0.zip) · [SHA-256](outputs/SHA256SUMS)
+[Windows x64 설치 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Windows-x64-v1.8.0.zip) · [개발 인계 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Dev-v1.8.0.zip) · [SHA-256](outputs/SHA256SUMS)
 
-v1.7.0은 리눅스에서 빌드하고 테스트했으며, Windows의 Herdr 앱에서는 아직 확인하지 않았습니다. Windows에서 확인된 판은 [v1.6.0](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Windows-x64-v1.6.0.zip)입니다.
-
-Herdr 데스크톱 0.1.17과 Windows x64 Python 3.10 이상이 있는 PC에서 새 ZIP을 별도 폴더에 모두 풀고 `Herdr-Mod-Kit/Install-Windows.cmd`를 실행하세요. v1.4.0 이후 판이 설치된 PC에서도 같은 순서로 업데이트할 수 있습니다. 설치 후 하단바 오른쪽에 `mod 1.7.0`이 표시됩니다. 업그레이드는 기존 기능 선택, 사용량 머신 및 키 설정을 보존합니다. 새 설치의 사용량 기본값은 `local`입니다. 설치 후 `Diagnose-Windows.cmd`로 확인할 수 있습니다.
+Herdr 데스크톱 0.1.17과 Windows x64 Python 3.10 이상이 있는 PC에서 새 ZIP을 별도 폴더에 모두 풀고 `Herdr-Mod-Kit/Install-Windows.cmd`를 실행하세요. v1.4.0 이후 판이 설치된 PC에서도 같은 순서로 업데이트할 수 있습니다. 설치 후 하단바 오른쪽에 `mod 1.8.0`이 표시됩니다. 업그레이드는 기존 기능 선택, 사용량 머신 및 키 설정을 보존합니다. 새 설치의 사용량 기본값은 `local`입니다. 설치 후 `Diagnose-Windows.cmd`로 확인할 수 있습니다.
 
 직접 편집한 설치 파일과 새 파일이 충돌하면 설치기가 해당 경로를 표시하고 중단합니다. 수정본을 별도 위치에 보관하고 해당 경로를 비운 뒤 다시 실행하세요. 실행 중인 앱이 변경할 파일을 계속 잠그면 Herdr를 닫고 재실행하세요. SSH 머신 등록과 Windows의 기존 `main` 레이아웃은 이 설치기의 관리 대상 밖에 있습니다.
+
+## Files에서 폴더를 ZIP으로 저장하기
+
+폴더를 우클릭해 **Download as ZIP…**을 선택하고 Windows 저장 창에서 이름과 위치를 고르세요. 로컬 폴더와 연결된 Herdr 머신의 폴더를 각각 원본 머신에서 압축합니다. ZIP에는 선택한 폴더, 하위 파일과 빈 폴더가 함께 들어갑니다. 심볼릭 링크와 Windows 정션은 건너뜁니다. 한 ZIP은 최대 10만 항목, 경로명 합계 16 MiB까지 지원합니다.
+
+폴더 안에 빈 파일이나 하위 폴더를 만들려면 같은 메뉴에서 **New File…** 또는 **New Folder…**를 선택하세요. 목록의 빈 곳을 우클릭하면 현재 루트가 대상입니다. 같은 이름이 있으면 다른 이름을 입력할 수 있습니다.
+
+![Herdr Files 폴더 메뉴의 새 파일·폴더 생성과 ZIP 다운로드](docs/screenshots/folder-menu.png)
 
 ## v1.7.0에서 달라진 점
 
@@ -87,7 +93,21 @@ PNG·JPG·JPEG 파일도 더블클릭하면 문서 탭에서 창 크기에 맞�
 
 ## 속도와 리소스 검증
 
-Windows x64 Herdr 0.1.17에서 v1.0과 v1.4.0에 같은 파일을 사용했습니다. 전송은 4 MiB 임의 데이터 3회 중앙값, PDF는 같은 1800×2250 페이지를 캐시 없이 렌더링한 8회 중앙값입니다.
+Windows Herdr 0.1.18에서 설치 ZIP의 뷰어로 200쪽 PDF 전체를 넘긴 뒤 20쪽을 되돌아갔습니다. 100%와 125% 사이로 네 번 확대·축소하며 83초간 측정한 결과, 앱의 전용 메모리는 측정 시점 중 최고 457.4 MiB, 마지막 385.5 MiB였고 핸들은 최고 666개, 마지막 632개였습니다. 별도로 PDF 도우미에서 2000×2500 페이지를 32회 다시 렌더링했으며 8회 간격의 네 측정 모두 18.12 MiB와 핸들 168개였습니다.
+
+v1.8.0은 글자가 많은 PDF에서 미리 읽은 쪽이 캐시 한도로 제거됐을 때 같은 위치에서 반복 렌더링하던 문제도 수정했습니다.
+
+같은 Windows PC에서 4 MiB 파일을 세 번 전송한 중앙값을 비교했습니다.
+
+| 전송 | v1.6.0 | v1.8.0 |
+| --- | ---: | ---: |
+| 로컬 업로드 / 다운로드 | 0.034초 / 0.028초 | 0.005초 / 0.010초 |
+| Herdr Core 경유 업로드 / 다운로드 | 0.747초 / 0.625초 | 0.460초 / 0.330초 |
+| Core 경유 전송 한 쌍의 호출 수 | 11회 | 5회 |
+
+같은 조건에서 캐시를 비운 1800×2250 PDF 한 쪽의 렌더링 중앙값은 두 버전 모두 39ms였습니다.
+
+이전 Windows x64 Herdr 0.1.17 시험에서는 v1.0과 v1.4.0에 같은 파일을 사용했습니다. 전송은 4 MiB 임의 데이터 3회 중앙값, PDF는 같은 1800×2250 페이지를 캐시 없이 렌더링한 8회 중앙값입니다.
 
 | 작업 | v1.0 | v1.4.0 |
 | --- | ---: | ---: |

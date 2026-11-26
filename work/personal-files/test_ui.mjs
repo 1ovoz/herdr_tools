@@ -574,5 +574,96 @@ if (staged) {
   pointer('file-a.pdf',down,255,275);
   click('file-a.pdf',2);
   assert.equal(disabled.file.file,'a.pdf','With PDF disabled, opening retains the built-in inline preview');
+  await finish();
+}
+// Creation uses the chosen folder even when it is collapsed, and shows errors in the name dialog.
+const creationHost = panel();
+creationHost.file.folders.clear();
+popup = menuAt(creationHost,'file-folder');
+// At the native Windows popup scale the five actions, heading, upload hint and padding need 248 units.
+const folderMenuHeight = overlays.at(-1).height;
+assert.ok(folderMenuHeight >= 248 && popup.el.styles.h[0] >= 248, 'The folder upload hint must fit below all five actions');
+click('new-file');
+dialog = openDialog();
+assert.equal(dialog.p.target.source,'/project/folder');
+assert.equal(dialog.instance.nameInput.value(),'');
+let priorRequests = jobs.length;
+for (const invalid of ['', '.', '../escape', 'nested/file']) {
+  dialog.instance.nameInput.set_value(invalid);
+  click('confirm-new-file');
+  assert.ok(dialog.instance.error);
+}
+await finish();
+assert.equal(jobs.length,priorRequests);
+dialog.instance.nameInput.set_value('새 파일.txt');
+bridgeResult = {ok:false,code:'exists',error:'This name already exists.'};
+const closeCount = closed.length;
+click('confirm-new-file'); await finish();
+assert.equal(closed.length,closeCount);
+assert.equal(dialog.instance.error,bridgeResult.error);
+assert.equal(dialog.instance.nameInput.value(),'새 파일.txt');
+bridgeResult = {ok:true,path:'/project/folder/빈 파일.txt'};
+dialog.instance.nameInput.set_value('빈 파일.txt');
+click('confirm-new-file'); click('confirm-new-file'); await finish();
+assert.equal(jobs.length,priorRequests+2);
+assert.deepEqual(jobs.at(-1),{action:'new-file',directory:'/project/folder',on:'lab',name:'빈 파일.txt',job:jobs.at(-1).job});
+listings.set('/project',[{name:'folder',dir:true}]);
+listings.set('/project/folder',[{name:'빈 파일.txt',dir:false}]);
+context.checking = () => false;
+render(creationHost.file,creationHost.props); await finish();
+render(creationHost.file,creationHost.props);
+assert.ok(ids.has('file-folder/빈 파일.txt'),'The new item is visible in the destination folder after creation');
+context.checking = () => true;
+const rootCreation = panel('C:\\repo\\',null);
+popup = menuAt(rootCreation,'upload-root'); click('new-folder');
+dialog = openDialog();
+click('cancel-change'); await finish();
+priorRequests = jobs.length;
+popup = menuAt(rootCreation,'files-tree'); click('new-folder');
+dialog = openDialog(); dialog.instance.nameInput.set_value('새 폴더');
+click('confirm-new-folder'); await finish();
+assert.equal(jobs.length,priorRequests+1);
+assert.deepEqual(jobs.at(-1),{action:'new-folder',directory:'C:\\repo\\',on:null,name:'새 폴더',job:jobs.at(-1).job});
+
+// A folder ZIP has a native Save As dialog, a compression phase, and can be cancelled or resumed.
+function dialogText(element) {
+  return typeof element === 'string' ? element : (element.contents || []).map(dialogText).join(' ');
+}
+popup = menuAt(files,'file-folder'); click('download-zip');
+const zipRequest = overlays.at(-1).props.requests[0];
+assert.deepEqual({...zipRequest},{action:'download-zip',source:'/project/folder',on:'lab',choose:true,job:zipRequest.job});
+const zipResume = {kind:'zip',token:'selected-destination'};
+bridgeResult = {ok:false,code:'exists',error:'The selected file exists.',resume:zipResume};
+work = fileJob();
+work.worker.progress = {phase:'archive',done:3*1048576,total:0};
+let zipDialog = render(work.worker,work.p);
+assert.match(dialogText(zipDialog),/ZIP/);
+assert.match(dialogText(zipDialog),/3\.0/);
+assert.doesNotMatch(dialogText(zipDialog),/%|NaN/);
+checkFooter(zipDialog,'close-job','cancel-job');
+work.worker.progress = {phase:'download',done:1048576,total:4*1048576};
+assert.match(dialogText(render(work.worker,work.p)),/25%/);
+await finish();
+checkFooter(render(work.worker,work.p),'close-job','replace-file');
+bridgeResult = {ok:true,path:'C:\\Downloads\\folder.zip'};
+click('replace-file'); await finish();
+assert.deepEqual(jobs.at(-1).resume,zipResume);
+assert.equal(jobs.at(-1).overwrite,true);
+assert.match(dialogText(render(work.worker,work.p)),/folder\.zip/);
+popup = menuAt(rootCreation,'files-tree'); click('download-zip');
+assert.equal(overlays.at(-1).props.requests[0].source,'C:\\repo\\');
+bridgeResult = {ok:true,partial:true,resume:zipResume};
+work = fileJob(); render(work.worker,work.p); click('cancel-job');
+await finish();
+assert.equal(jobs.at(-1).action,'discard');
+assert.deepEqual(jobs.at(-1).resume,zipResume);
+assert.equal(work.worker.result.cancelled,true);
+popup = menuAt(files,'file-a.pdf');
+assert.ok(!ids.has('new-file') && !ids.has('new-folder') && !ids.has('download-zip'));
+if (staged) {
+  const readOnly = panel('/project','lab',{pdf:true});
+  render(readOnly.file,readOnly.props);
+  assert.ok(!ids.get('file-folder').handlers['on_mouse_down:right']);
+  assert.ok(!ids.get('files-tree').handlers['on_mouse_down:right']);
 }
 console.log('Files UI checks passed', staged ? '(staged)' : '(source)');

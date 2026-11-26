@@ -1,6 +1,15 @@
-# Herdr 플러그인 개발 인계 · Windows x64 v1.7.0
+# Herdr 플러그인 개발 인계 · Windows x64 v1.8.0
 
-2026-11-26 기준. 다른 컴퓨터에서 개발을 이어가려면 `Herdr-Mod-Kit-Dev-v1.7.0.zip` 하나를 복사해 압축을 풀고 `Herdr-Mod-Kit-Dev` 폴더를 작업 공간으로 여세요. 이 문서, 수정할 원본, 테스트, 설치 도구, 완성된 Windows 설치 ZIP이 들어 있습니다.
+2026-11-26 기준. 다른 컴퓨터에서 개발을 이어가려면 `Herdr-Mod-Kit-Dev-v1.8.0.zip` 하나를 복사해 압축을 풀고 `Herdr-Mod-Kit-Dev` 폴더를 작업 공간으로 여세요. 이 문서, 수정할 원본, 테스트, 설치 도구, 완성된 Windows 설치 ZIP이 들어 있습니다.
+
+## v1.8.0 변경 사항
+
+- Files의 폴더·루트 메뉴에서 새 파일과 폴더를 만들거나 **Download as ZIP…**으로 폴더 전체를 내려받습니다. 새 항목이 기존 이름을 사용하는 경우 이름 입력창에서 다시 시도할 수 있습니다.
+- 긴 전송의 이어받기 상태를 JSON 문자열로 전달해 Windows와 원격 파일시스템의 64비트 식별자 및 나노초 타임스탬프를 보존합니다.
+- 고밀도 PDF에서 캐시 한도로 제거된 페이지를 같은 위치에서 다시 미리 읽는 반복을 차단했습니다.
+- Windows Herdr 0.1.18 설치본에서 200쪽 문서를 약 83초 동안 탐색·확대해 앱 전용 메모리 최고 457.4 MiB, 마지막 385.5 MiB, 마지막 핸들 632개를 측정했습니다. 렌더 도우미의 32회 반복 시험은 18.12 MiB와 핸들 168개를 유지했습니다.
+- Windows의 격리 프로필에서 v1.6.0과 v1.7.0 각각을 v1.8.0으로 업데이트한 뒤 재설치했습니다. 기존 단축키·설정·레이아웃·사용량 소스를 보존했고 설치 및 진단 CMD가 종료 코드 0을 반환했습니다. 실제 Herdr Core 왕복 검사는 5 MiB의 한글 파일과 빈 폴더를 ZIP에서 대조했습니다.
+- v1.7.0 인계 ZIP의 SHA-256과 설치본 105개 파일을 스테이징 결과와 대조했습니다. 기존 Files 동작, 사용량 소스, 분할·독립 탭, PDF·Markdown·이미지 미리보기는 회귀 검사에 포함합니다.
 
 ## v1.7.0 변경 사항
 
@@ -11,13 +20,7 @@
 - Files는 변경된 폴더만 다시 읽고, 숨겨진 동안에는 읽지 않습니다. 저장소 자체 설정에 filter가 있으면 Git 표시를 끄고 안내 줄을 보여 줍니다.
 - 원격 도우미와 사용량 수집기를 `python -I`로 실행합니다.
 
-이 판은 리눅스에서 빌드하고 테스트했습니다. Windows의 Herdr 앱에서는 아직 실행하지 않았으므로 아래 순서로 확인하세요.
-
-1. 설치 ZIP으로 설치하고 `Diagnose-Windows.cmd`로 모드가 로드되는지 봅니다. 바뀐 JavaScript는 리눅스에서 가짜 API로만 실행했습니다. 설치기는 모드가 로드되지 않으면 기존 설치를 바꾸지 않고 멈춥니다.
-2. `verify.py "$qa/profile" --machine lab`으로 SSH 경유 병렬 전송과 업로드 권한을 확인합니다. 4개 동시 전송은 `hc exec` 왕복에서만 측정했습니다.
-3. `check-upgrade.py`로 v1.6.0에서 올라오는 업데이트를 확인합니다.
-4. `check-speed.py 이전설치.zip`으로 속도를 다시 잽니다.
-5. 200쪽 이상 PDF를 넘기고 확대하면서 `herdr-app.exe`의 메모리를 봅니다. `check-resources.py`는 도우미 프로세스만 잽니다.
+v1.7.0의 측정값은 인계 당시의 Linux 결과입니다. Windows 확인 결과는 이 문서의 v1.8.0 항목을 참고하세요.
 
 로컬 Windows 폴더 목록은 여전히 폴더마다 PowerShell을 한 번씩 띄웁니다. `git`은 이름으로 실행합니다.
 
@@ -36,8 +39,8 @@
 
 ## 새 컴퓨터에서 시작
 
-1. Windows x64에 Herdr 데스크톱, herdr-core, Python 3.10 이상(x64)을 준비합니다. Herdr를 한 번 열어 기본 레이아웃을 생성합니다. v1.6.0까지 Herdr 데스크톱 0.1.17에서 검증했습니다. JavaScript 테스트에는 Node.js가 필요합니다. 검증한 버전은 24입니다.
-2. `outputs/Herdr-Mod-Kit-Windows-x64-v1.7.0.zip`을 별도 폴더에 풀고 `Herdr-Mod-Kit/Install-Windows.cmd`를 실행합니다. 필요하면 Herdr의 **Settings → Look**에서 `herdr-mod-kit`을 선택합니다. 같은 폴더의 `Diagnose-Windows.cmd`가 기능별 검사 결과를 보여 줍니다.
+1. Windows x64에 Herdr 데스크톱, herdr-core, Python 3.10 이상(x64)을 준비합니다. Herdr를 한 번 열어 기본 레이아웃을 생성합니다. v1.8.0 설치 ZIP은 Herdr 데스크톱 0.1.18에서 검증했습니다. JavaScript 테스트에는 Node.js가 필요합니다. 검증한 버전은 24입니다.
+2. `outputs/Herdr-Mod-Kit-Windows-x64-v1.8.0.zip`을 별도 폴더에 풀고 `Herdr-Mod-Kit/Install-Windows.cmd`를 실행합니다. 필요하면 Herdr의 **Settings → Look**에서 `herdr-mod-kit`을 선택합니다. 같은 폴더의 `Diagnose-Windows.cmd`가 기능별 검사 결과를 보여 줍니다.
 3. 이 Windows PC에서는 사용량 대상을 `local`로 지정했습니다. 다른 PC에서 원격 서버 사용량이 필요하면 Herdr Machines에 연결한 머신 이름을 사용하세요. 최초 설치 기본값은 `local`이며 업데이트할 때는 기존 대상을 보존합니다.
 4. 이 체크아웃의 변경을 Windows에서 실행하려면 저장소 루트에서 아래 명령을 사용합니다. 첫 줄은 설치에 필요한 모드 소스를 준비합니다. 마지막 줄은 실행 중인 Herdr와 설치 파일을 검사합니다.
 
@@ -68,7 +71,7 @@ py -3 -X utf8 work/herdr-mod-kit/kit.py diagnose
 
 - 기능은 위 표의 원본에서 수정합니다. `work/kit-tools/stage.py`가 원본을 배포용 모드 이름과 기능 선택 조건에 맞춰 변환합니다. Files 메뉴나 드래그 코드가 달라졌을 때 변환기가 알려 주는 코드 조각을 확인하세요. 변환 대상이 사라지면 빌드가 중단됩니다.
 - 설치·레이아웃·키 설정·진단은 `work/herdr-mod-kit/kit.py`가 담당합니다. 공용 로그는 `common/kit_log.py`에 있습니다. 공용 전송·문서 도우미는 설치 ZIP의 `common/`에 한 번 묶고, 설치할 때 Herdr JS 로더가 요구하는 모드에 복사합니다.
-- 기능을 수정한 뒤에는 작업 폴더에서 테스트하고, 사용자가 설치 파일 반영을 요청한 시점에만 배포본을 만듭니다. 이번 파일명은 v1.7.0이고 설치 기록과 진단에 표시되는 내부 버전은 1.7.0입니다. 기존 배포 이력은 `work/package-publish-notes.md`에 있습니다.
+- 기능을 수정한 뒤에는 작업 폴더에서 테스트하고, 사용자가 설치 파일 반영을 요청한 시점에만 배포본을 만듭니다. 이번 파일명은 v1.8.0이고 설치 기록과 진단에 표시되는 내부 버전은 1.8.0입니다. 기존 배포 이력은 `work/package-publish-notes.md`에 있습니다.
 
 다음 명령은 개발 ZIP을 푼 루트에서 실행합니다. `py`가 없는 환경에서는 `py -3`을 `python`으로 바꿉니다.
 
@@ -108,7 +111,7 @@ node work/personal-files/test_ui.mjs
 node work/personal-files/test_pdf_ui.mjs
 ```
 
-사진과 Markdown은 `pdf` 기능의 문서 뷰어를 공유합니다. 전송의 로컬·원격 파일 작업은 `work/personal-files/file_host.py`에 있습니다. `check-speed.py 이전설치.zip`은 같은 Windows 데스크톱 세션에서 기존 버전과 현재 버전의 속도를 비교합니다. Herdr Core 경유 측정은 같은 PC를 사용합니다. 실제 Markdown·사진 화면과 측정값은 루트 README에 있습니다.
+사진과 Markdown은 `pdf` 기능의 문서 뷰어를 공유합니다. 전송의 로컬·원격 파일 작업은 `work/personal-files/file_host.py`에 있습니다. Windows에서 `py -3 work/kit-tools/check-speed.py --folder-zip`으로 실제 Herdr Core를 통한 폴더 다운로드를 검사합니다. `check-speed.py 이전설치.zip`은 같은 Windows 데스크톱 세션에서 기존 버전과 현재 버전의 속도를 비교합니다. Herdr Core 경유 측정은 같은 PC를 사용합니다. 실제 Markdown·사진 화면과 측정값은 루트 README에 있습니다.
 
 Windows x64 Herdr 0.1.17에서 v1.0(내부 1.3.0), v1.4.0, v1.5.0 설치본을 각각 v1.6.0으로 업데이트한 뒤 재설치했습니다. 세 경우 모두 기존 키 설정·레이아웃·사용량 조회 머신이 보존됐습니다. 이전 ZIP이 있는 경우 `py -3 work/kit-tools/check-upgrade.py 이전설치.zip 최신설치.zip`으로 격리된 프로필에서 재현할 수 있습니다. `py -3 work/kit-tools/check-resources.py`는 같은 Windows 프로세스에서 2000×2500 PDF 비트맵을 32회 새로 렌더링하고 전용 메모리와 핸들을 측정합니다.
 
@@ -120,7 +123,7 @@ Windows x64 Herdr 0.1.17에서 v1.0(내부 1.3.0), v1.4.0, v1.5.0 설치본을 �
 $qa = Join-Path ([System.IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path "$qa/profile/layouts" -Force | Out-Null
 Copy-Item work/kit-tools/fixtures/main.json "$qa/profile/layouts/main.json"
-Expand-Archive outputs/Herdr-Mod-Kit-Windows-x64-v1.7.0.zip "$qa/install"
+Expand-Archive outputs/Herdr-Mod-Kit-Windows-x64-v1.8.0.zip "$qa/install"
 py -3 -X utf8 "$qa/install/Herdr-Mod-Kit/kit.py" install --app-home "$qa/profile"
 py -3 -X utf8 "$qa/install/Herdr-Mod-Kit/kit.py" diagnose --app-home "$qa/profile"
 node work/kit-tools/check-tabs-and-links.cjs "$qa/profile"

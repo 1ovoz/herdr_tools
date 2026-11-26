@@ -76,7 +76,7 @@ class Control:
         return self.deadline is None or time.monotonic()-self.started<FINISH_WITHIN_SECONDS
 
 # The same packaged file handles local requests and executes on the chosen Herdr machine.
-REMOTE = Path(file_host.__file__).read_text(encoding='utf8')
+REMOTE = file_host.host_program(Path(file_host.__file__).read_text(encoding='utf8'))
 
 class RemoteClient:
     def __init__(self, on, hc): self.on, self.hc = on, hc
@@ -126,6 +126,11 @@ def open_download(result):
 
 def discard(client, state):
     """Remove the staging file of a transfer that will not continue."""
+    if isinstance(state,dict) and state.get('kind')=='zip':
+        discard(client,state.get('transfer'))
+        if state.get('token'):
+            with suppress(Exception):client.request('archive-drop',token=state['token'])
+        return
     if not isinstance(state,dict) or not isinstance(state.get('part'),str):return
     if state.get('kind')=='upload' and getattr(client,'on',None):
         with suppress(Exception):client.request('abort',path=state['part'])
@@ -292,6 +297,7 @@ def download(client, source, target_dir, overwrite=False, progress=None, filenam
         actual=digest.hexdigest() if digest else file_digest(part)
         if actual!=expected:raise Failure('hash','Download verification failed; retry.')
         marked=mark_download(part) if os.name=='nt' and remote else True
+        control.check()
         publish_download(part,target,overwrite,private)
         return {'path':str(target),'size':offset,'sha256':actual,'zone_marked':marked}
     finally:
@@ -329,6 +335,7 @@ def local_copy(source, target, overwrite, prefix, progress, control, resume):
                                              'directory':str(target.parent),'filename':target.name}}
         if before!=file_revision(source) or offset!=before[0]:raise Failure('changed','The source changed. Retry.')
         sha=digest.hexdigest() if digest else file_digest(part)
+        control.check()
         publish_download(part,target,overwrite)
         return {'path':str(target),'size':offset,'sha256':sha}
     finally:
@@ -359,7 +366,7 @@ def downloads_folder():
             return os.path.expandvars(winreg.QueryValueEx(key,'{374DE290-123F-4565-9164-39C4925E467B}')[0])
     return str(Path.home()/'Downloads')
 
-def choose_download_path(name):
+def choose_download_path(name, zip_archive=False):
     if os.name!='nt':
         raise Failure('dialog','The download location picker requires the Windows desktop.')
     try:
@@ -380,6 +387,11 @@ try {
     $dialog.InitialDirectory = $options.directory
     $dialog.Filter = 'All files (*.*)|*.*'
     $dialog.AddExtension = $false
+    if ($options.zip) {
+        $dialog.Filter = 'ZIP archive (*.zip)|*.zip'
+        $dialog.DefaultExt = 'zip'
+        $dialog.AddExtension = $true
+    }
     $dialog.OverwritePrompt = $false
     if ($dialog.ShowDialog() -eq [Windows.Forms.DialogResult]::OK) {
         [Console]::Write($dialog.FileName)
@@ -389,7 +401,7 @@ try {
     completed=subprocess.run(
         [str(Path(os.environ['SystemRoot'])/'System32'/'WindowsPowerShell'/'v1.0'/'powershell.exe'),
          '-NoProfile','-NonInteractive','-STA','-Command',script],
-        input=json.dumps(dict(name=suggested,directory=downloads_folder())),
+        input=json.dumps(dict(name=suggested,directory=downloads_folder(),zip=zip_archive)),
         encoding='utf-8',capture_output=True,creationflags=subprocess.CREATE_NO_WINDOW,
     )
     if completed.returncode:
@@ -416,6 +428,63 @@ def download_as(client, source, progress, control=None, resume=None):
         if error.code=='exists':
             raise Failure('exists','This name is already in use. Choose a different download name.') from error
         raise
+
+def download_zip(client, source, progress, control, resume=None, overwrite=False):
+    if resume:
+        if resume.get('kind')!='zip':raise Failure('transfer','Invalid ZIP job.')
+        state=dict(resume)
+        target=Path(state['directory'])/safe_leaf(state['filename'])
+        if overwrite:state['overwrite']=True
+    else:
+        leaf=re.split(r'[/\\]',source.rstrip('/\\'))[-1] if client.on else Path(source).name
+        suggestion=(leaf or 'folder')+'.zip'
+        target=choose_download_path('folder.zip' if re.search(WINDOWS_INVALID_LEAF,suggestion) else suggestion,zip_archive=True)
+        if target is None:return {'cancelled':True}
+        if not target.suffix:target=target.with_name(target.name+'.zip')
+        safe_leaf(target.name)
+        state={'kind':'zip','directory':str(target.parent),'filename':target.name}
+    overwrite=state.get('overwrite') is True
+    keep=False
+    try:
+        control.check()
+        if target.is_dir():raise Failure('folder','Choose a file as the ZIP destination.')
+        if os.path.lexists(target) and not overwrite:
+            raise Failure('exists','The ZIP destination already exists.')
+        if not state.get('started'):
+            token=state.setdefault('token',uuid.uuid4().hex)
+            exclude='' if client.on else str(target.parent.resolve()/target.name)
+            client.request('archive-start',path=source,token=token,exclude=exclude)
+            state['started']=True
+            progress(0,0,'archive')
+        while True:
+            control.check()
+            if control.due():
+                keep=True
+                return {'partial':True,'resume':state}
+            status=client.request('archive-next',token=state['token'])
+            if status.get('ready'):break
+            progress(status['done'],0,'archive')
+        control.check()
+        options=dict(overwrite=overwrite,progress=lambda done,total:progress(done,total,'download'),
+                     control=control,resume=state.get('transfer'),filename=target.name)
+        result=fetch(client,status['path'],target.parent,**options)
+        if result.get('partial'):
+            keep=True
+            state['transfer']=result['resume']
+            return {'partial':True,'resume':state}
+        return result
+    except Failure as error:
+        if error.code in ('exists','connection'):
+            keep=True
+            if error.resume:state['transfer']=error.resume
+            # fetch may already have removed a part which failed its final no-replace publish.
+            elif state.get('transfer') and not Path(state['transfer']['part']).exists():
+                state.pop('transfer')
+            message=f'Replace the existing file at {target}?' if error.code=='exists' else str(error)
+            raise Failure(error.code,message,state) from error
+        raise
+    finally:
+        if not keep:discard(client,state)
 
 def write_png(bitmap, stream):
     def chunk(kind,data):
@@ -655,16 +724,19 @@ def main():
     progress_path=jobs/(job+'.json')
     progress_temp=progress_path.with_suffix('.tmp')
     cancel_file=jobs/(job+'.cancel')
-    def progress(done,total):
+    def progress(done,total,phase=None):
         # A Windows reader can briefly prevent replacing the progress snapshot.
         with suppress(OSError):
             progress_path.parent.mkdir(exist_ok=True)
-            progress_temp.write_text(json.dumps({'done':done,'total':total}),encoding='utf8')
+            snapshot={'done':done,'total':total}
+            if phase:snapshot['phase']=phase
+            progress_temp.write_text(json.dumps(snapshot),encoding='utf8')
             os.replace(progress_temp,progress_path)
     client=RemoteClient(q.get('on'),args.hc)
     action=q['action']
     control=Control(cancel_file,SLICE_SECONDS)
     resume=q.get('resume')
+    if isinstance(resume,str):resume=json.loads(resume)
     unfinished=False
     try:
         if action=='revision':
@@ -679,9 +751,13 @@ def main():
             options=dict(overwrite=q.get('overwrite',False),progress=progress,control=control,resume=resume)
             if q.get('on'):result=upload(client,q['source'],q['directory'],**options)
             else:result=local_upload(q['source'],q['directory'],**options)
+        elif action in ('new-file','new-folder'):result=client.request(action,path=q['directory'],name=q['name'])
         elif action in ('copy','move'):result=client.request(action,path=q['source'],directory=q['directory'])
         elif action=='rename':result=client.request(action,path=q['source'],name=q['name'])
         elif action=='delete':result=client.request(action,path=q['source'],confirmed=q.get('confirmed'))
+        elif action=='download-zip':
+            sweep_jobs(jobs)
+            result=download_zip(client,q['source'],progress,control,resume,q.get('overwrite') is True)
         elif action=='download':
             sweep_jobs(jobs)
             if q.get('choose'):
@@ -733,6 +809,9 @@ def main():
             os.startfile(folder);result={}
         else:raise Failure('action','Unknown Files action')
         unfinished=bool(result.get('partial'))
+        # The UI echoes this state. Keep native file IDs and nanosecond timestamps out of JS numbers.
+        if result.get('resume') is not None:
+            result['resume']=json.dumps(result['resume'],separators=(',',':'))
     finally:
         # A transfer that continues in the next run keeps its progress on screen.
         if not unfinished:
@@ -745,4 +824,4 @@ if __name__=='__main__':
     try:main()
     except Exception as e:
         print(json.dumps({'ok':False,'code':getattr(e,'code','error'),'error':str(e)[:300],
-                          **({'resume':e.resume} if getattr(e,'resume',None) else {})},ensure_ascii=False))
+                          **({'resume':json.dumps(e.resume,separators=(',',':'))} if getattr(e,'resume',None) else {})},ensure_ascii=False))

@@ -44,6 +44,19 @@ const FILE_ACTIONS = [
 ];
 const PASTE = {id:"paste", label:"Paste", feature:"transfer", key:"ctrl-v", hint:"Ctrl+V"};
 const OPEN_DOWNLOADS = {id:"open-downloads", label:"Open Downloads folder", feature:"transfer"};
+const FOLDER_ACTIONS = [
+  {id:"new-file", label:"New File…", feature:"transfer"},
+  {id:"new-folder", label:"New Folder…", feature:"transfer"},
+  PASTE,
+  {id:"download-zip", label:"Download as ZIP…", feature:"transfer"},
+  OPEN_DOWNLOADS,
+];
+const CHANGE_DIALOGS = {
+  "new-file": {title:"New file", button:"Create", directory:true},
+  "new-folder": {title:"New folder", button:"Create", directory:true},
+  rename: {title:"Rename file", button:"Rename", directory:false},
+  delete: {title:"Permanently delete this file?", button:"Delete permanently", directory:false},
+};
 
 function menuTarget(root, on, relative, dir, name) {
   const windows = /^[A-Za-z]:[\\/]|^\\\\/.test(root) ||
@@ -175,14 +188,16 @@ export default class Files extends DocumentView {
       this.treeFocus.focus();
       return;
     }
-    if (this.mode === "rename" || this.mode === "delete") {
-      if (this.mode === "rename") {
-        const name = props().target.name;
+    if (CHANGE_DIALOGS[this.mode]) {
+      if (this.mode !== "delete") {
+        const name = this.mode === "rename" ? props().target.name : "";
         this.nameInput = InputState.new({value:name});
         this.nameInput.on("submit", (_e,task)=>this.submitChange(task));
         this.nameInput.focus();
-        const dot = name.lastIndexOf(".");
-        this.nameInput.set_selected_range({start:0,end:dot > 0 ? dot : name.length});
+        if (name) {
+          const dot = name.lastIndexOf(".");
+          this.nameInput.set_selected_range({start:0,end:dot > 0 ? dot : name.length});
+        }
       }
       return;
     }
@@ -391,11 +406,13 @@ export default class Files extends DocumentView {
   }
 
   menuActions(dir) {
-    return (dir ? [PASTE,OPEN_DOWNLOADS] : [...FILE_ACTIONS,OPEN_DOWNLOADS]).filter(a=>this[a.feature]);
+    return (dir ? FOLDER_ACTIONS : [...FILE_ACTIONS,OPEN_DOWNLOADS]).filter(a=>this[a.feature]);
   }
 
   menuHeight(dir) {
-    return 42 + 30 * this.menuActions(dir).length + (dir ? 34 : 0);
+    const rows = this.menuActions(dir).length;
+    // Folder popups also fit the upload hint below the native action rows.
+    return dir ? 84 + 34 * rows : 42 + 30 * rows;
   }
 
   keyContext() {
@@ -465,10 +482,15 @@ export default class Files extends DocumentView {
         cx.write_to_clipboard(id === "copy-path" ? source : target.relative);
         setShared(CLIPBOARD,null);
         break;
+      case "new-file":
+      case "new-folder":
       case "rename":
       case "delete":
         openOverlay({mod:"personal-files",kind:"dialog",width:440,height:CHANGE_DIALOG_HEIGHT,
           props:{mode:id,target,transfer:this.transfer}});
+        break;
+      case "download-zip":
+        this.job([{action:id,source,on,choose:true,job:jobId()}]);
         break;
       case "download":
       case "download-open":
@@ -482,15 +504,17 @@ export default class Files extends DocumentView {
 
   submitChange(cx) {
     const {target,overlay} = props();
-    if (!this.transfer || this.busy || target.dir) return;
-    const rename = this.mode === "rename";
-    const request = {action:this.mode,source:target.source,on:target.on,job:jobId()};
-    if (rename) {
+    const creating = CHANGE_DIALOGS[this.mode].directory;
+    if (!this.transfer || this.busy || target.dir !== creating) return;
+    const request = {action:this.mode,on:target.on,job:jobId()};
+    if (creating) request.directory = target.source;
+    else request.source = target.source;
+    if (this.nameInput) {
       request.name = this.nameInput.value();
-      if (!request.name || request.name === "." || request.name === ".." || request.name.includes("/")) {
-        this.error = "Enter a single file name."; cx.notify(); return;
+      if (!request.name || request.name === "." || request.name === ".." || /[\/\0]/.test(request.name)) {
+        this.error = "Enter a single name."; cx.notify(); return;
       }
-      if (request.name === target.name) { closeOverlay(overlay); return; }
+      if (!creating && request.name === target.name) { closeOverlay(overlay); return; }
     } else {
       request.confirmed = true;
     }
@@ -501,7 +525,9 @@ export default class Files extends DocumentView {
       try {
         const result = await bridge(request);
         if (!result.ok) throw new Error(result.error);
-        setShared("personal-files.changed",{id:request.job,source:target.source,on:target.on});
+        setShared("personal-files.changed",creating
+          ? {id:request.job,on:target.on,root:target.root,expand:target.path}
+          : {id:request.job,on:target.on,source:target.source});
         closeOverlay(overlay);
       } catch (error) {
         this.error = String(error.message || error);
@@ -534,18 +560,19 @@ export default class Files extends DocumentView {
   }
 
   renderChange() {
-    const t = theme(), {target,overlay} = props(), rename = this.mode === "rename";
+    const t = theme(), {target,overlay} = props(), change = CHANGE_DIALOGS[this.mode];
+    const deleting = this.mode === "delete";
     const body = v_flex()
       .child(div().flex_none().truncate().tooltip(target.source).child((target.on ? target.on + " · " : "") + target.source))
-      .when(rename, el=>el.child(Input.new(this.nameInput).flex_none().h(34).px(9).items_center().rounded(5).border_1()
+      .when(!deleting, el=>el.child(Input.new(this.nameInput).flex_none().h(34).px(9).items_center().rounded(5).border_1()
         .border_color(t.accent).bg(t.background).text_color(t.foreground)))
-      .when(!rename, el=>el.child(div().flex_none().text_color(t.muted).child("This file cannot be recovered from the Recycle Bin.")))
+      .when(deleting, el=>el.child(div().flex_none().text_color(t.muted).child("This file cannot be recovered from the Recycle Bin.")))
       .when(Boolean(this.error), el=>el.child(div().flex_none().text_color(t.blocked).child(this.error)));
     const actions = h_flex()
       .child(this.dialogButton("cancel-change","Cancel",()=>closeOverlay(overlay)))
-      .child(this.dialogButton("confirm-" + this.mode, rename ? "Rename" : "Delete permanently",
-        cx=>this.submitChange(cx), rename ? "primary" : "danger"));
-    return this.renderDialog(CHANGE_DIALOG_HEIGHT, rename ? "Rename file" : "Permanently delete this file?", body, actions);
+      .child(this.dialogButton("confirm-" + this.mode, change.button,
+        cx=>this.submitChange(cx), deleting ? "danger" : "primary"));
+    return this.renderDialog(CHANGE_DIALOG_HEIGHT, change.title, body, actions);
   }
 
   async pollProgress(cx) {
@@ -606,7 +633,8 @@ export default class Files extends DocumentView {
           }
           if (!value.ok) {
             this.error = value.error;
-            this.collision = value.code === "exists" && (request.action === "upload" || (request.action === "download" && !request.choose));
+            this.collision = value.code === "exists" && (request.action === "upload" ||
+              (request.action === "download" && !request.choose) || (request.action === "download-zip" && Boolean(value.resume)));
             return;
           }
           this.result = value;
@@ -648,14 +676,25 @@ export default class Files extends DocumentView {
   renderJob() {
     const t=theme(), current=this.queue?.[this.index], done=this.index>=this.queue.length;
     const title=current?.action==="upload"?"Upload to "+(current.on||"this computer"):
-      ({copy:"Copy file",move:"Move file",folder:"Open Downloads folder"})[current?.action] || "Download";
+      ({copy:"Copy file",move:"Move file",folder:"Open Downloads folder","download-zip":"Download folder as ZIP"})[current?.action] || "Download";
     const cancelled = done && this.result?.cancelled;
     const progress=this.progress;
+    let status = "Ready";
+    if (this.error) status = this.error;
+    else if (this.cancelling) status = "Cancelling…";
+    else if (this.busy) {
+      if (progress?.phase === "archive") status = "Creating ZIP… · " + (progress.done/1048576).toFixed(1) + " MiB";
+      else if (progress) {
+        const percent = Math.round(progress.done/Math.max(1,progress.total)*100);
+        status = percent + "% · " + (progress.done/1048576).toFixed(1) + " / " + (progress.total/1048576).toFixed(1) + " MiB";
+      } else status = current?.action === "download-zip" && !current.resume ? "Choose where to save the ZIP…" : "Connecting…";
+    } else if (cancelled) status = "";
+    else if (done) status = this.result?.message || this.index + " operation(s) completed";
     const body = v_flex()
       .child(div().flex_none().text_color(t.muted).truncate().child(current?.source || this.result?.path || ""))
-      .child(div().flex_none().text_color(this.error?t.blocked:t.muted).child(this.error || (this.cancelling ? "Cancelling…" : this.busy ? (progress ? `${Math.round(progress.done/Math.max(1,progress.total)*100)}% · ${(progress.done/1048576).toFixed(1)} / ${(progress.total/1048576).toFixed(1)} MB` : "Connecting…") : cancelled?"":done?(this.result?.message || `${this.index} operation(s) completed`):"Ready")))
+      .child(div().flex_none().text_color(this.error?t.blocked:t.muted).child(status))
       .when(current?.action==="upload",el=>el.child(div().flex_none().text_color(t.dim).truncate().child(`Folder: ${current.directory}`)));
-    const stoppable = this.busy && ["upload","download"].includes(current?.action);
+    const stoppable = this.busy && ["upload","download","download-zip"].includes(current?.action);
     const actions = h_flex()
       .child(this.dialogButton("close-job",this.busy ? "Working…" : "Close",cx=>this.closeJob(cx)))
       .when(stoppable, el=>el.child(this.dialogButton("cancel-job","Cancel",cx=>this.cancelJob(cx),"danger",this.cancelling)))
@@ -913,7 +952,7 @@ export default class Files extends DocumentView {
 
   render(cx) {
     if(this.mode==="menu") return this.renderMenu();
-    if(this.mode==="rename" || this.mode==="delete") return this.renderChange();
+    if(CHANGE_DIALOGS[this.mode]) return this.renderChange();
     if(this.mode==="job") return this.renderJob();
     if(this.mode==="pdf" || this.mode==="document" || this.mode==="group") return this.renderDocument(cx);
     if(this.mode==="drop") return this.renderDrop();
@@ -926,6 +965,13 @@ export default class Files extends DocumentView {
         if (this.file && menuTarget(this.root,this.on,this.file,false,"").source === changed.source) this.show(null);
       }
       const newChange = changeId !== this.changed;
+      if (newChange && changed?.expand && changed.root === this.root && changed.on === this.on && this.current(this.context)) {
+        let path = "";
+        for (const name of changed.expand.split("/")) {
+          path = path ? path + "/" + name : name;
+          this.folders.add(path);
+        }
+      }
       this.changed=changeId; this.refresh(cx,newChange);
     } else if (!checking() && this.stale && !this.loading && this.shown()) this.refresh(cx);
     const t = theme();

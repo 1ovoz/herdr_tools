@@ -274,8 +274,14 @@ export class DocumentView extends View {
       // The screen is complete: read one page ahead in the direction of travel, so it is ready on arrival.
       const step = this.scrollDirection || 1;
       const edge = step > 0 ? Math.max(...visible) : Math.min(...visible);
-      for (let ahead = 1; ahead <= PAGE_AHEAD && !batch.length; ahead++) {
-        const i = edge+step*ahead;
+      // A dense page can be evicted as soon as it arrives. Read ahead only once at each edge.
+      const edgeKey = [this.requestVersion, width, edge, step].join("/");
+      if (this.prefetchEdge !== edgeKey) {
+        this.prefetchEdge = edgeKey;
+        this.prefetchDistance = 0;
+      }
+      while (this.prefetchDistance < PAGE_AHEAD && !batch.length) {
+        const i = edge + step * ++this.prefetchDistance;
         if (i >= 0 && i < this.sizes.length && wanted(i)) batch = [i];
       }
     }

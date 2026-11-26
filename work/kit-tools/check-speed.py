@@ -1,4 +1,5 @@
 """Compare matched file transfers and PDF renders against a previous Windows installer."""
+import argparse
 import importlib.util
 import json
 import os
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from unittest.mock import patch
 from zipfile import ZipFile
 
 work=Path(__file__).resolve().parents[1]
@@ -24,7 +26,7 @@ class CoreLoopback:
     def request(self,action,**fields):
         self.calls+=1
         core=Path(os.environ['LOCALAPPDATA'])/'Programs/herdr-core/hc.exe'
-        result=subprocess.run([str(core),'exec','-i',sys.executable,'-c',self.module.REMOTE],
+        result=subprocess.run([str(core),'exec','-i',sys.executable,'-I','-c',self.module.REMOTE],
                               input=json.dumps(dict(action=action,**fields)).encode(),
                               capture_output=True,check=True,timeout=75)
         reply=json.loads(result.stdout)
@@ -32,21 +34,52 @@ class CoreLoopback:
         return reply
 
 
+def check_folder_zip():
+    with tempfile.TemporaryDirectory(prefix='herdr-core-zip-') as tmp:
+        root=Path(tmp)
+        source=root/'자료'
+        (source/'empty').mkdir(parents=True)
+        (source/'nested').mkdir()
+        data=os.urandom(5*1024**2)
+        (source/'nested'/'한글.bin').write_bytes(data)
+        target=root/'export.zip'
+        client=CoreLoopback(bridge)
+        with patch.object(bridge,'choose_download_path',return_value=target):
+            bridge.download_zip(client,str(source),lambda *args:None,bridge.Control())
+        with ZipFile(target) as bundle:
+            assert bundle.testzip() is None
+            assert bundle.read('자료/nested/한글.bin')==data
+            assert bundle.getinfo('자료/empty/').is_dir()
+        print('5 MiB folder ZIP verified through Herdr Core, calls:',client.calls)
+
+
 def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('previous',type=Path,nargs='?')
+    parser.add_argument('--folder-zip',action='store_true',help='exercise a folder download through Windows Herdr Core')
+    args=parser.parse_args()
+    if args.folder_zip:
+        check_folder_zip()
+    if not args.previous:
+        if not args.folder_zip:parser.error('supply a previous Windows ZIP or --folder-zip')
+        return
     with tempfile.TemporaryDirectory(prefix='herdr-speed-') as tmp:
         root=Path(tmp)
-        with ZipFile(sys.argv[1]) as previous:previous.extractall(root)
+        with ZipFile(args.previous) as previous:previous.extractall(root)
         old_dir=root/'Herdr-Mod-Kit'/'common'
         sys.path.insert(0,str(old_dir))
         spec=importlib.util.spec_from_file_location('old_bridge',old_dir/'bridge.py')
         old=importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(old)
+        # Load the previous installer's own host protocol during the comparison.
+        with patch.dict(sys.modules):
+            sys.modules.pop('file_host',None)
+            spec.loader.exec_module(old)
         source=root/'payload.bin'
         source.write_bytes(os.urandom(4*1024**2))
         fixture=work/'personal-files'/'fixture.pdf'
         # Both helpers use the same verified PDFium runtime and the same document.
         sys.path.insert(0,str(work/'personal-files'/'vendor'))
-        for label,module in [('v1.0',old),('current',bridge)]:
+        for label,module in [(args.previous.stem,old),('current',bridge)]:
             folder=root/label
             folder.mkdir()
             dest=folder/'download'

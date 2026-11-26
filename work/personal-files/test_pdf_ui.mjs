@@ -74,7 +74,7 @@ assert.equal(viewer.rasterWidth(),4096);
 const flowApi = await import('./document-flow.js');
 // Values made inside the viewer's context compare by content.
 const plain = value => JSON.parse(JSON.stringify(value));
-function loader(pageCount) {
+function loader(pageCount, charsPerPage = 1) {
   const state = {requests:[], timers:[], pending:[], fail:new Set(), clock:1_000_000, revision:'1'};
   const Viewer = vm.runInNewContext(source + '\nDocumentView', {
     View: class {}, settings: () => ({zoom:1}), ...flowApi, jobId: () => 'job', Date: {now: () => state.clock},
@@ -83,7 +83,7 @@ function loader(pageCount) {
       state.requests.push(request);
       if (request.pages.some(page => state.fail.has(page))) return {ok:false,code:'pdf',error:'render failed'};
       return {ok:true,revision:[state.revision],rendered:request.pages.map((page,i) => ({page,image:`page-${page}-${request.width}.png`,
-        width:request.width,height:1,chars:request.chars[i] ? [{t:'a',r:[0,0,1,1]}] : []}))};
+        width:request.width,height:1,chars:request.chars[i] ? Array(charsPerPage).fill({t:'a',r:[0,0,1,1]}) : []}))};
     },
   });
   const view = new Viewer();
@@ -156,6 +156,19 @@ function loader(pageCount) {
   view.startSelection({},cx);
   await settle();
   assert.ok(view.pages.has(0) && view.pages.has(1),'A click on the page loads it again');
+}
+{
+  const {state,view,cx,settle} = loader(10,50000);
+  // Cap this fixture's helper launches so a recurring prefetch fails promptly.
+  cx.spawn = fn => { if (state.requests.length < 8) state.pending.push(fn(cx)); };
+  view.queuePages(cx);
+  await settle();
+  assert.deepEqual(plain(state.requests.map(r => r.pages)),[[0,1],[2],[3]],
+    'A dense prefetched page evicted by the character budget is requested once per viewport');
+  assert.ok(!view.pages.has(3));
+  view.moveTo(0,view.flow().pages[3].top,cx);
+  await settle();
+  assert.ok(view.pages.has(3),'An evicted page is loaded when it becomes visible');
 }
 {
   const {state,view,cx,settle} = loader(4);

@@ -599,6 +599,7 @@ class Transfers(unittest.TestCase):
     def test_long_transfer_keeps_its_progress_between_runs(self):
         payload=os.urandom(64*1024*5)
         source=self.local/'sliced.bin';source.write_bytes(payload)
+        os.utime(source,ns=(1732100000000000100,1732100000000000100))
         job='e'*32
         progress=self.root/'data'/'personal-files'/'jobs'/f'{job}.json'
         request=dict(action='upload',source=str(source),directory=str(self.remote),job=job)
@@ -612,7 +613,9 @@ class Transfers(unittest.TestCase):
             first=self.in_process(**request)
             self.assertTrue(first['partial'])
             self.assertEqual(json.loads(progress.read_text()),{'done':64*1024*2,'total':len(payload)})
-            second=self.in_process(**request,resume=first['resume'])
+            # A JavaScript view stores the token between helper runs. Its numbers use doubles.
+            returned=json.loads(json.dumps(first['resume']),parse_int=lambda value:int(float(value)))
+            second=self.in_process(**request,resume=returned)
             self.assertTrue(second['partial'])
             progress.with_suffix('.cancel').touch()
             with self.assertRaises(bridge.Failure) as caught:
