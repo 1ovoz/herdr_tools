@@ -659,6 +659,15 @@ export default class Files extends DocumentView {
       .on_click((_e,cx)=>{if(!disabled)action(cx);}).child(label);
   }
 
+  toolbarIcon(id, label, icon, action) {
+    const t = theme();
+    return Button.new(id).accessibility_label(label).tooltip(label).size(28).flex_none()
+      .h_flex().items_center().justify_center().rounded(5).text_color(t.muted)
+      .cursor_pointer().hover(el=>el.bg(t.hover).text_color(t.foreground))
+      .on_click((_event,cx)=>action(cx))
+      .child(svg(`mods/personal-files/${icon}.svg`).size(16));
+  }
+
   renderMenu() {
     const t=theme(), target=props().target;
     // Native popups measure their contents before assigning a height to the scroll area.
@@ -978,6 +987,12 @@ export default class Files extends DocumentView {
     this.openPane = focused()?.pane ?? this.openPane;
     const root=this.root,on=this.on,file=this.file;
     const rootTarget = root ? menuTarget(root,on,"",true,root) : null;
+    const selection = this.selected;
+    const rootName = root?.split(/[\\/]/).filter(Boolean).pop() || root || "";
+    const caption = file?.split(/[\\/]/).pop() || (selection?.path ? selection.name : rootName);
+    const parentPath = selection?.path.split("/").slice(0,-1).join("/");
+    const createIn = selection?.dir ? selection : parentPath
+      ? menuTarget(root,on,parentPath,true,parentPath.split("/").pop()) : rootTarget;
     return v_flex().id("files").relative().size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .on_mouse_move((event,cx)=>this.trackFileDrag(event,cx))
       .on_mouse_up("left",(event,cx)=>this.finishFileDrag(event,null,cx))
@@ -996,13 +1011,17 @@ export default class Files extends DocumentView {
         this.clearFileDrag(cx);
         if (this.current(context)) startDocumentDrag(doc);
       })
-      .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
-        .when(Boolean(this.file), el => el.child(div().id("files-back").w(20).cursor_pointer().text_color(t.muted).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("←")))
-        .child(div().font_semibold().child("Files"))
-        .when(root && !file,el=>el.child(this.button("files-refresh",this.loading ? "Refreshing…" : "Refresh",cx=>this.requestRefresh(cx))
-          .tooltip("Refresh this folder and expanded folders (F5)")))
+      .child(h_flex().h(31).flex_none().px(12).items_center()
+        .child(div().font_semibold().child("Files")))
+      .child(h_flex().id("files-toolbar").h(34).flex_none().px(8).gap(2).items_center().border_b(1).border_color(t.border)
+        .when(this.transfer && root && !file,bar=>bar
+          .child(this.toolbarIcon("files-new-file","New file","file-plus",cx=>this.menuAction("new-file",createIn,cx)))
+          .child(this.toolbarIcon("files-new-folder","New folder","folder-plus",cx=>this.menuAction("new-folder",createIn,cx))))
+        .when(root && !file,bar=>bar.child(this.toolbarIcon("files-refresh",this.loading ? "Refreshing…" : "Refresh (F5)","refresh",cx=>this.requestRefresh(cx))))
+        .when(Boolean(file),el=>el.child(this.button("files-back","←",cx=>{this.show(null); cx.notify();}).tooltip("Back to files")))
         .when(Boolean(file),el=>el.child(this.button("download-preview","Download",()=>this.job([{action:"download",source:`${root}/${file}`,on,job:jobId()}]))))
-        .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.file ?? this.root?.split(/[\\/]/).pop() ?? "")))
+        .child(div().id("files-selection").flex_1().min_w(0).text_right().truncate().text_size(12).pr(4)
+          .text_color(t.dim).tooltip(caption).child(caption)))
       .when(!this.file,el=>el.child(div().id("upload-root").px(12).py(8).text_size(11).text_color(t.muted).bg(t.surface)
         .tooltip(this.root?`Upload to ${this.on||"this computer"}: ${this.root}`:"Choose a folder first")
         .when(Boolean(rootTarget),el=>el

@@ -666,4 +666,37 @@ if (staged) {
   assert.ok(!ids.get('file-folder').handlers['on_mouse_down:right']);
   assert.ok(!ids.get('files-tree').handlers['on_mouse_down:right']);
 }
+
+// Both source and staged panels expose the same two-row toolbar.
+const toolbar = panel('C:/repo/',null);
+render(toolbar.file,toolbar.props);
+const controls = ['files-new-file','files-new-folder','files-refresh','files-selection'];
+assert.deepEqual(ids.get('files-toolbar')?.contents,controls.map(id=>ids.get(id)));
+assert.equal(dialogText(ids.get('files-selection')),'repo');
+for (const id of controls.slice(0,3)) {
+  assert.equal(dialogText(ids.get(id)),'');
+  assert.ok(ids.get(id).styles.accessibility_label[0]);
+  assert.ok(ids.get(id).styles.tooltip[0]);
+}
+for (const [selection,label,destination,action] of [
+  [null,'repo','C:/repo/','new-folder'],
+  ['file-folder','folder','C:\\repo\\folder','new-file'],
+  ['file-folder/한글.txt','한글.txt','C:\\repo\\folder','new-folder'],
+  ['file-a.pdf','a.pdf','C:/repo/','new-file']
+]) {
+  render(toolbar.file,toolbar.props);
+  if (selection) pointer(selection,down,10,10);
+  render(toolbar.file,toolbar.props);
+  assert.equal(dialogText(ids.get('files-selection')),label);
+  click('files-'+action);
+  const dialog=overlays.at(-1).props;
+  assert.equal(dialog.mode,action);
+  assert.equal(dialog.target.source,destination);
+  assert.equal(dialog.target.dir,true);
+}
+if (staged) {
+  const readOnly=panel('/project','lab',{pdf:true});
+  render(readOnly.file,readOnly.props);
+  assert.ok(!ids.has('files-new-file') && !ids.has('files-new-folder') && ids.has('files-refresh'));
+}
 console.log('Files UI checks passed', staged ? '(staged)' : '(source)');

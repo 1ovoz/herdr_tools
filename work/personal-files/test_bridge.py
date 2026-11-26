@@ -57,6 +57,26 @@ class Transfers(unittest.TestCase):
         self.assertEqual(result['text'],'한'*400001)
         self.assertEqual(result['revision'][0],source.stat().st_size)
 
+    def test_html_document_preview(self):
+        source = self.local / '미리보기.HTM'
+        content = ('<!doctype html><html><head><title>Hidden title</title></head><body>'
+                   '<h1>소개 &amp; 소식</h1><p style="color:red">A <b>bold</b> paragraph</p>'
+                   '<img src="unavailable.png" alt="그림"><script>hidden()</script>'
+                   '<iframe src="elsewhere">hidden frame</iframe><a href="other">Read</a></body></html>')
+        source.write_text(content, encoding='utf8')
+        request = {'action':'text','source':str(source),'job':'1'*32}
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['bridge','--home',str(self.local),'--hc','unused','--request',json.dumps(request)]), redirect_stdout(output):
+            bridge.main()
+        result = json.loads(output.getvalue())
+        self.assertEqual(result['text'], content)
+        self.assertIn('<h1>소개 &amp; 소식</h1>', result['html'])
+        self.assertIn('<b>bold</b>', result['html'])
+        self.assertIn('그림', result['html'])
+        self.assertIn('Read', result['html'])
+        for omitted in ('hidden', 'Hidden title', 'color:red', 'unavailable.png', 'href=', 'iframe', 'script'):
+            self.assertNotIn(omitted, result['html'])
+
     def test_cache_evicts_stale_generated_files_only(self):
         paths=[self.local/name for name in ('111.png','222.png','333.png','note.png')]
         for path in paths:

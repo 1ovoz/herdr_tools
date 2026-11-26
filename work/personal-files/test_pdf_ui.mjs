@@ -24,6 +24,40 @@ const appZoom = 1.25;
 const blocks=vm.runInNewContext(source+'\nmarkdownBlocks',{View:class{}});
 assert.deepEqual([...blocks('# title\n\n![alt](pic.png)\n<img src=x>')],['# title\n\n&#33;[alt](pic.png)\n&lt;img src=x>']);
 assert.deepEqual([...blocks('~~~js\nconst x="<img>";\n~~~')],['~~~js\nconst x="<img>";\n~~~']);
+// Exercise the installed document view through the same bridge response as a local or remote HTM.
+{
+  let reply={text:'<h1>Hello</h1>',html:'<h1>Hello</h1>',revision:['1']};
+  const rendered=[], buttons=new Map();
+  const element=()=>new Proxy({}, {get: (_,key)=>key==='when' ? (test,fn)=>{
+    const el=element(); if(test) fn(el); return el;
+  } : ()=>element()});
+  const Viewer=vm.runInNewContext(source+'\nDocumentView',{
+    View:class {},theme:()=>({}),settings:()=>({}), pageAt,pageFlow, v_flex:element,h_flex:element,div:element,
+    EditorState:{new:opts=>({...opts,release(){}})}, Editor:{new:code=>{rendered.push(code.value);return element();}},
+    TextView:{html:(_id,html)=>{rendered.push(html);return element();}}
+  });
+  const doc=new Viewer();
+  Object.assign(doc,{document:{source:'/reports/보고서.HTM',on:'lab',mode:'document'},width:600,height:400,
+    sizes:[],scroll:{x:0,y:0},pages:new Map(),zoom:1,request:async()=>reply,
+    button:(id,label,fn)=>{buttons.set(id,{label,fn});return element();}});
+  await doc.readText();
+  assert.equal(doc.code.language,'html');
+  doc.renderPage({});
+  assert.equal(buttons.get('html-toggle').label,'Source');
+  buttons.get('html-toggle').fn({notify(){}});
+  reply={text:'<h1 class="new">Updated</h1>',html:'<h1>Updated</h1>',revision:['2']};
+  await doc.readText();
+  doc.renderPage({});
+  assert.deepEqual(rendered,[ '<h1>Hello</h1>',reply.text ]);
+  assert.equal(buttons.get('html-toggle').label,'Preview');
+  buttons.get('html-toggle').fn({notify(){}});
+  doc.renderPage({});
+  assert.equal(rendered.at(-1),reply.html);
+  reply={text:null,revision:['3']};
+  await doc.readText();
+  assert.equal(doc.html,null);
+  assert.equal(doc.code,null);
+}
 const DocumentView = vm.runInNewContext(source + '\nDocumentView', {
   View: class {}, settings: () => ({zoom: appZoom}), pageAt, pageFlow, restorePosition
 });

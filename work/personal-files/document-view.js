@@ -6,7 +6,7 @@ import { hitChar, selectedText, selectionRects } from "./pdf-geometry.js";
 import { pageFlow, visiblePages, pageAt, restorePosition } from "./document-flow.js";
 import { attachGroup, choosePage, closePage, groupState, groupPaneFor, saveDocumentPosition } from "./document-drag.js";
 
-const modes = { ts:"js", tsx:"js", jsx:"js", ps1:"powershell", yml:"yaml", jsonc:"json", md:"markdown" };
+const modes = { ts:"js", tsx:"js", jsx:"js", ps1:"powershell", yml:"yaml", jsonc:"json", md:"markdown", htm:"html" };
 const POLL_MS = 2000;
 const MIN_ZOOM = 0.5, MAX_ZOOM = 2, ZOOM_STEP = 0.25;
 const PAGE_LEFT = 12;
@@ -200,7 +200,8 @@ export class DocumentView extends View {
   }
 
   async readText() {
-    const {text,revision}=await this.request("text");
+    const {text,revision,html}=await this.request("text");
+    this.html = html ?? null;
     this.revision=revision.join(":");
     if (text === null || text.includes("\0")) {
       this.markdown=null;
@@ -490,6 +491,8 @@ export class DocumentView extends View {
     const t=theme(), {source,on,mode}=this.document;
     const isPdf=mode==="pdf", caption=source?.split(/[\\/]/).pop()||"Document";
     const g=this.flow(), index=pageAt(g,this.scroll.y+1), data=this.pages.get(index);
+    const hasHtml = this.html != null;
+    const hasPreview = hasHtml || Boolean(this.markdown);
     const compact=g.viewportWidth<320;
     const narrow=g.viewportWidth<205;
     const picture=this.picture;
@@ -504,12 +507,15 @@ export class DocumentView extends View {
       .track_focus(this.docFocus).on_key_down((e,cx)=>{if(isPdf)this.keyDocument(e,cx);})
       .child(h_flex().h(42).flex_none().px(10).gap(5).items_center().bg(t.chrome)
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(caption))
-        .when(Boolean(this.markdown),el=>el.child(this.button("markdown-toggle",this.showSource?"Preview":"Source",cx=>{
+        .when(hasPreview,el=>el.child(this.button(hasHtml?"html-toggle":"markdown-toggle",this.showSource?"Preview":"Source",cx=>{
           this.showSource=!this.showSource;cx.notify();
         })))
         .when(!compact,el=>el.child(this.button("document-download","Download",()=>this.job([{action:"download",source,on,job:jobId()}]),!source)))
         .when(isPdf && !compact,el=>el.child(this.button("pdf-copy","Copy text",cx=>this.copyDocumentText(cx),!this.selection)))
         )
+      .when(hasHtml && !this.showSource,el=>el.child(v_flex().id("html-preview").flex_1().min_h(0)
+        .overflow_y_scrollbar().px(18).py(12)
+        .child(TextView.html("html-body",this.html).selectable(true).scrollable(false).w_full())))
       .when(!isPdf && this.markdown && !this.showSource,el=>el.child(v_flex().id("markdown-preview").flex_1().min_h(0)
         .overflow_y_scrollbar().px(18).py(12).gap(8).children(this.markdown.map((block,i)=>
           TextView.markdown("markdown-block-"+i,block).selectable(true).scrollable(false).w_full()
@@ -517,7 +523,7 @@ export class DocumentView extends View {
       .when(this.isPicture,el=>el.child(div().flex_1().min_h(0).flex().items_center().justify_center()
         .child(picture && !this.documentWarning ? image(picture.image).w(picture.width*scale).h(picture.height*scale)
           : div().text_color(t.dim).child(this.documentWarning||"Loading image…"))))
-      .when(!isPdf && !this.isPicture && (!this.markdown || this.showSource),el=>el.child(this.code ? Editor.new(this.code).flex_1().min_h(0)
+      .when(!isPdf && !this.isPicture && (!hasPreview || this.showSource),el=>el.child(this.code ? Editor.new(this.code).flex_1().min_h(0)
         : div().p(12).text_color(t.dim).child(this.documentWarning||this.textStatus||"Loading file…")))
       .when(isPdf,el=>el
         .child(h_flex().h(40).flex_none().px(9).gap(4).items_center().bg(t.surface)

@@ -29,6 +29,8 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 import hashlib
+from html import escape
+from html.parser import HTMLParser
 import math
 from pathlib import Path
 import re
@@ -54,6 +56,69 @@ SLICE_SECONDS = 180
 FINISH_WITHIN_SECONDS = 60
 SLOW_CALL_SECONDS = 300
 MAX_BATCH_CHARS = 120000
+
+class HtmlPreview(HTMLParser):
+    """Emit only native rich-text elements. Never pass source attributes to the viewer."""
+    tags = set('p div blockquote pre code strong b em i u s del sub sup ul ol li h1 h2 h3 h4 h5 h6 table thead tbody tfoot tr th td'.split())
+    hidden = set('head title script style template iframe object svg math noscript'.split())
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.open_tags = []
+        self.skip = []
+        self.elements = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'body' and self.skip == ['head']:
+            self.skip.clear()
+        if tag in self.hidden:
+            self.skip.append(tag)
+        if self.skip:
+            return
+        self.elements += 1
+        if self.elements > 3000 or len(self.open_tags) >= 64:
+            raise self.LimitReached
+        if tag in self.tags:
+            self.parts.append(f'<{tag}>')
+            self.open_tags.append(tag)
+        elif tag in ('br', 'hr'):
+            self.parts.append(f'<{tag}>')
+        elif tag == 'img':
+            self.handle_data(dict(attrs).get('alt') or '')
+
+    def handle_endtag(self, tag):
+        if self.skip:
+            if tag == self.skip[-1]:
+                self.skip.pop()
+        elif tag in self.open_tags:
+            while self.open_tags:
+                opened = self.open_tags.pop()
+                self.parts.append(f'</{opened}>')
+                if opened == tag:
+                    break
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.parts.append(escape(data, quote=False))
+
+    class LimitReached(Exception):
+        pass
+
+    @classmethod
+    def render(cls, source):
+        parser = cls()
+        limited = len(source) > 100000
+        try:
+            parser.feed(source[:100000])
+            parser.close()
+        except cls.LimitReached:
+            limited = True
+        parser.parts.extend(f'</{tag}>' for tag in reversed(parser.open_tags))
+        if limited:
+            parser.parts.append('<p>Preview limit reached. Select Source to keep reading.</p>')
+        return ''.join(parser.parts)
+
 
 class Failure(Exception):
     def __init__(self, code, message, resume=None):
@@ -744,6 +809,8 @@ def main():
             result['revision']=[str(number) for number in result['revision']]
         elif action=='text':
             result=client.request('text',path=q['source'])
+            if Path(q['source']).suffix.lower() in ('.htm', '.html') and result['text'] is not None:
+                result['html'] = HtmlPreview.render(result['text'])
             rev=result['revision'] if q.get('on') else result['revision'][:3]
             result['revision']=[str(number) for number in rev]
         elif action=='upload':

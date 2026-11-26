@@ -19,7 +19,7 @@ root_files=['kit.py','Install-Windows.cmd','Diagnose-Windows.cmd','README.md','A
 manifests={
     'herdr-kit-version': ['mod.json','main.js'],
     'herdr-kit-usage': ['mod.json','main.js','collect.py','codex.svg'],
-    'herdr-kit-files': ['mod.json','main.js'],
+    'herdr-kit-files': ['mod.json','main.js', 'file-plus.svg', 'folder-plus.svg', 'refresh.svg'],
     'herdr-kit-pdf': ['mod.json','main.js','pdf-geometry.js'],
     'herdr-kit-tabs': ['mod.json','main.js'],
     'herdr-kit-pane': ['mod.json','main.js'],

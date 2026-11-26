@@ -64,6 +64,9 @@ files_main = adapt(
 )
 write(files / "main.js", "// Adapted from Herdr Files (Apache-2.0).\n" + files_main)
 
+for icon in ("file-plus.svg", "folder-plus.svg", "refresh.svg"):
+    shutil.copy2(source / icon, files / icon)
+
 document = adapt(
     read(source / "document-view.js"),
     ('export class DocumentView extends View {\n  initDocument(cx) {',
