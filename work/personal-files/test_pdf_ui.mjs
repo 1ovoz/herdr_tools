@@ -70,4 +70,99 @@ viewer.width = 1750;
 assert.ok(viewer.rasterWidth() > raster);
 viewer.zoom = 2;
 assert.equal(viewer.rasterWidth(),4096);
-console.log('PDF scrolling, pointer-anchored Ctrl+wheel zoom, raster sizing and text selection passed');
+// Page loading: one helper run per screenful, pages kept for scrolling back, and bounded retries.
+const flowApi = await import('./document-flow.js');
+// Values made inside the viewer's context compare by content.
+const plain = value => JSON.parse(JSON.stringify(value));
+function loader(pageCount) {
+  const state = {requests:[], timers:[], pending:[], fail:new Set(), clock:1_000_000, revision:'1'};
+  const Viewer = vm.runInNewContext(source + '\nDocumentView', {
+    View: class {}, settings: () => ({zoom:1}), ...flowApi, jobId: () => 'job', Date: {now: () => state.clock},
+    groupState: () => ({active:'doc'}), focused: () => ({tab:'tab'}),
+    bridge: async request => {
+      state.requests.push(request);
+      if (request.pages.some(page => state.fail.has(page))) return {ok:false,code:'pdf',error:'render failed'};
+      return {ok:true,revision:[state.revision],rendered:request.pages.map((page,i) => ({page,image:`page-${page}-${request.width}.png`,
+        width:request.width,height:1,chars:request.chars[i] ? [{t:'a',r:[0,0,1,1]}] : []}))};
+    },
+  });
+  const view = new Viewer();
+  Object.assign(view,{document:{source:'C:/docs/a.pdf',on:null,mode:'pdf'},cachedPdf:'C:/docs/a.pdf',revision:'1',
+    width:1000,height:1900,zoom:1,scroll:{x:0,y:0},sizes:Array.from({length:pageCount},() => [600,800]),
+    pages:new Map(),requestVersion:1,renderingPage:false,groupId:'group',documentId:'doc',viewerTab:'tab'});
+  const cx = {notify() {}, stop_propagation() {}, spawn: fn => state.pending.push(fn(cx)),
+    timer:{after: (ms,fn) => { state.timers.push({ms,fn}); return {cancel() {}}; }}};
+  const settle = async () => { while (state.pending.length) await state.pending.shift(); };
+  return {state,view,cx,settle};
+}
+{
+  const {state,view,cx,settle} = loader(30);
+  const flow = view.flow(), shown = flowApi.visiblePages(flow,0);
+  assert.deepEqual(shown,[0,1],'This fixture shows two pages at the top');
+  view.queuePages(cx); view.queuePages(cx);
+  await settle();
+  assert.deepEqual(plain(state.requests.map(r => r.pages)),[[0,1],[2],[3]],
+    'Missing visible pages share one helper run, then two pages are read ahead one at a time');
+  assert.deepEqual(plain(state.requests[0].chars),[true,true]);
+  assert.equal(state.requests[0].action,'preview');
+  view.moveTo(0,flow.pages[2].top,cx);
+  await settle();
+  assert.deepEqual(plain(state.requests.slice(3).map(r => r.pages)),[[4],[5]],'Pages read ahead are not rendered again on arrival');
+  const before = state.requests.length;
+  view.moveTo(0,0,cx);
+  await settle();
+  assert.equal(state.requests.length,before,'Scrolling back to kept pages starts no helper');
+  assert.ok(view.pages.get(0).chars.length,'Kept pages still carry their text for selection');
+  view.zoom = 2;
+  view.queuePages(cx);
+  await settle();
+  const sharper = state.requests.slice(before);
+  assert.deepEqual(plain(sharper[0].pages),[0]);
+  assert.deepEqual(plain(sharper[0].chars),[false],'A sharper bitmap reuses the text already extracted');
+  assert.ok(view.pages.get(0).chars.length);
+  view.zoom = 1;
+  for (let page = 0; page < 30; page++) { view.moveTo(0,flow.pages[page].top,cx); await settle(); }
+  assert.ok(view.pages.size <= 12 + 3,'Only nearby pages are kept: ' + view.pages.size);
+  assert.ok(view.pages.has(29) && !view.pages.has(0));
+  const calm = state.requests.length;
+  state.clock += 9*60*1000;
+  view.queuePages(cx);
+  await settle();
+  assert.ok(state.requests.slice(calm).some(r => r.pages.includes(29)),'A page shown past its cache protection is asked for again');
+}
+{
+  const {state,view,cx,settle} = loader(30);
+  for (let page = 0; page < 30; page++) state.fail.add(page);
+  view.queuePages(cx);
+  await settle();
+  assert.deepEqual(plain(state.requests.map(r => r.pages)),[[0,1],[2],[3]],'A broken helper is tried once per page, not in a loop');
+  assert.equal(state.timers.length,1);
+  const waits = [];
+  while (state.timers.length) {
+    const {ms,fn} = state.timers.shift();
+    waits.push(ms);
+    state.clock += ms;
+    fn(cx);
+    await settle();
+  }
+  assert.deepEqual(waits,[2000,8000,30000],'Visible pages are retried further apart, then left alone');
+  const stopped = state.requests.length;
+  assert.ok(stopped <= 3 + 3*3,'Retries stay bounded: ' + stopped);
+  state.clock += 3600*1000;
+  view.queuePages(cx);
+  await settle();
+  assert.equal(state.requests.filter(r => r.pages.includes(0)).length,4,'After the last retry a visible page waits for the person');
+  state.fail.clear();
+  view.startSelection({},cx);
+  await settle();
+  assert.ok(view.pages.has(0) && view.pages.has(1),'A click on the page loads it again');
+}
+{
+  const {state,view,cx,settle} = loader(4);
+  state.revision = '2';
+  view.queuePages(cx);
+  await settle();
+  assert.equal(view.pages.size,0,'A bitmap of a file that changed meanwhile is not shown');
+  assert.equal(state.timers.length,1,'It is retried, and the change poll reloads the document');
+}
+console.log('PDF scrolling, pointer-anchored Ctrl+wheel zoom, raster sizing, text selection and page loading passed');

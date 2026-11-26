@@ -5,7 +5,8 @@ import vm from 'node:vm';
 const ids = new Map(), overlays = [], closed = [], jobs = [], shared = new Map(), bindings = [];
 const splits = [], tasks = [], copied = [], opened = [];
 const destinations = [], listed = [], listings = new Map();
-let focusedPane = null;
+const timers = [], written = [], bridgeReplies = [], gitCalls = [];
+let focusedPane = null, listingRuns = 0, gitMock = null, layoutValue = null, windowActive = true;
 let propsValue = {}, bridgeResult = {ok:true,path:'/download'}, stopped = 0, tid = 0, paints = 0, zoom = 1;
 function element() {
   const handlers = {}, styles = {}, children = [];
@@ -28,7 +29,7 @@ function element() {
 
 const cx = {
   stop_propagation: () => stopped++, notify: () => paints++, spawn: fn => tasks.push(fn),
-  timer: {every() {}, after() {}}, bind_keys: rows => bindings.push(...rows),
+  timer: {every() {}, after(ms,fn) { timers.push({ms,fn}); return {cancel() {}}; }}, bind_keys: rows => bindings.push(...rows),
   write_to_clipboard: value => copied.push(value),
   focus_handle: () => ({focus() {}, is_focused: () => true})
 };
@@ -41,20 +42,25 @@ const context = {
   div:element, svg:element, h_flex:element, v_flex:element,
   props: () => propsValue, checking: () => true, theme: () => new Proxy({}, {get: (_, token) => token}), settings: () => ({zoom}),
   shared: key => shared.get(key), setShared: (key,value) => shared.set(key,value),
-  bridge: async q => { jobs.push(q); return bridgeResult; }, jobId: () => 'id-' + ++tid,
+  bridge: async q => { jobs.push(structuredClone(q)); return bridgeReplies.length ? bridgeReplies.shift() : bridgeResult; }, jobId: () => 'id-' + ++tid,
+  appHome: () => 'C:/app', writeTextFile: async (...args) => { written.push(args); }, layout: () => layoutValue,
   openOverlay: q => overlays.push(q), closeOverlay: id => closed.push(id),
   uploadRequests: (paths,directory,on) => paths.map(source => ({action:'upload',source,directory,on})),
   InputState: {new: ({value}) => ({value:() => value, set_value(next) { value = next; }, on() {}, focus() {}, set_selected_range() {}})},
   Button: {new: id => element().id(id)}, Input: {new:element}, EditorState:{}, Editor:{}, notify() {},
-  spaces:() => [], panes:() => [], focused:() => focusedPane, window:() => ({platform:'windows'}),
+  spaces:() => [], panes:() => [], focused:() => focusedPane, window:() => ({platform:'windows',active:windowActive}),
   exec: async (program,args,options) => {
-    if (program === 'git') return {code:1};
+    if (program === 'git') { gitCalls.push(args); return gitMock ? gitMock(args,options) : {code:1}; }
     assert.equal(program,'sh');
-    const path = args.at(-1);
-    listed.push([options.on,path]);
-    const entries = listings.get(path);
-    if (!entries) throw new Error('Missing folder ' + path);
-    return {code:0,stdout:entries.map(e => (e.dir?'d':'f') + '\0' + e.name + '\0').join('')};
+    // One program lists every folder it is given, each as its own section.
+    listingRuns++;
+    let stdout = '';
+    for (const path of args.slice(3)) {
+      listed.push([options.on,path]);
+      const entries = listings.get(path);
+      stdout += 'D\0' + (entries ? 1 : 0) + '\0' + (entries || []).map(e => (e.dir?'d':'f') + '\0' + e.name + '\0').join('');
+    }
+    return {code:0,stdout};
   }
 };
 const staged = process.argv[2];
@@ -210,7 +216,9 @@ const uploadProps = {mode:'job',overlay:'job',transfer:true,requests:[{action:'u
 const uploadJob = view(uploadProps);
 bridgeResult = {ok:false,error:'Connection failed'};
 uploadJob.work(cx);
-assert.equal(checkFooter(render(uploadJob,uploadProps),'close-job').styles.disabled[0],true);
+checkFooter(render(uploadJob,uploadProps),'close-job','cancel-job');
+assert.equal(ids.get('close-job').styles.disabled[0],true);
+assert.equal(ids.get('cancel-job').styles.disabled[0],false,'A running transfer can be cancelled');
 await finish();
 checkFooter(render(uploadJob,uploadProps),'close-job','retry-file');
 bridgeResult = {ok:false,code:'exists',error:'File exists'}; click('retry-file'); await finish();
@@ -369,7 +377,171 @@ await finish();
 render(refresh.file,refresh.props);
 assert.ok(!ids.has('file-folder') && !refresh.file.folders.has('folder'));
 assert.equal(refresh.file.error,null,'An externally removed expanded folder is skipped');
-assert.equal(listed.length,5);
+assert.equal(listingRuns,3,'Each refresh lists all of its folders with one program');
+
+// A reported change reads only the shown folders it touches, after a pause.
+const GIT = '\0git';
+const touched = (paths,root,open) => { const found = context.changedFolders(paths,root,new Set(open)); return found && [...found]; };
+assert.deepEqual(touched(['/project/src/a.txt','/project/src/app/deep/x'],'/project',['src','src/app']),['src']);
+assert.deepEqual(touched(['/project/new.txt'],'/project',[]),['']);
+assert.deepEqual(touched(['/project/src'],'/project',['src']),['','src'],'A changed folder is read with its parent');
+assert.deepEqual(touched(['/project/node_modules/x/y.js','/project/build/out/a.o'],'/project',['src']),[],'Changes out of sight read nothing');
+assert.deepEqual(touched(['/project/.git/index'],'/project',[]),[GIT],'A commit or stage only updates the marks');
+assert.deepEqual(touched(['C:\\Project\\Src\\A.txt'],'c:/project',['Src']),['Src'],'Windows paths compare without case or slash style');
+assert.equal(touched(['/project'],'/project',['src']),null,'The root itself means read everything');
+assert.equal(touched(['/elsewhere/a'],'/project',[]),null);
+const watched = panel();
+listings.set('/project',[{name:'folder',dir:true},{name:'a.pdf',dir:false}]);
+listings.set('/project/folder',[{name:'added.txt',dir:false}]);
+let runs = listingRuns, seen = listed.length;
+watched.file.noteChanges(['/project/node_modules/pkg/index.js'],watched.file.context,cx);
+assert.equal(timers.length,0,'Nothing is scheduled for changes out of sight');
+watched.file.noteChanges(['/project/folder/added.txt'],watched.file.context,cx);
+watched.file.noteChanges(['/project/folder/other.txt'],watched.file.context,cx);
+assert.equal(timers.length,1,'A burst of changes shares one reading');
+assert.ok(timers[0].ms >= 50 && timers[0].ms <= 2000);
+timers.shift().fn(cx);
+await finish();
+assert.deepEqual(listed.slice(seen),[['lab','/project/folder']],'Only the touched folder is listed');
+assert.equal(listingRuns,runs+1);
+render(watched.file,watched.props);
+assert.ok(ids.has('file-folder/added.txt') && ids.has('file-a.pdf'));
+runs = listingRuns;
+const gitBefore = gitCalls.length;
+watched.file.refresh(cx,false,new Set([GIT]));
+await finish();
+assert.equal(listingRuns,runs,'A change under .git lists no folder');
+assert.ok(gitCalls.length > gitBefore,'It still asks Git for the marks');
+listings.set('/project',[{name:'a.pdf',dir:false}]);
+watched.file.refresh(cx,false,new Set(['']));
+await finish();
+assert.ok(!watched.file.folders.has('folder') && !watched.file.entries.has('folder'),'A folder removed outside the app closes');
+timers.length = 0;
+
+// Git marks are skipped where the repository's own config names programs for Git to run.
+const repo = panel();
+listings.set('/project',[{name:'a.pdf',dir:false}]);
+const configured = {scope:'local',code:0};
+gitMock = args => {
+  if (args[0] === 'rev-parse') return {code:0,stdout:'/project\n'};
+  if (args[0] === 'config') {
+    if (configured.code === 129) return args.includes('--show-scope') ? {code:129,stdout:''} : {code:configured.scope === 'local' ? 0 : 1,stdout:''};
+    return configured.code ? {code:configured.code,stdout:''} : {code:0,stdout:configured.scope + '\0filter.x.clean\nprogram\0'};
+  }
+  return {code:0,stdout:' M a.pdf\0'};
+};
+const statusRuns = () => gitCalls.filter(args => args.includes('status')).length;
+let statuses = statusRuns();
+repo.file.requestRefresh(cx); await finish();
+render(repo.file,repo.props);
+assert.equal(statusRuns(),statuses,'git status does not run under the repository\'s own filters');
+assert.ok(ids.has('git-marks-off') && !repo.file.marks['/project/a.pdf']);
+click('git-marks-off'); await finish();
+render(repo.file,repo.props);
+assert.equal(statusRuns(),statuses+1,'A repository the person trusts shows its marks');
+assert.ok(!ids.has('git-marks-off'));
+assert.equal(repo.file.marks['/project/a.pdf'],'M');
+assert.ok(gitCalls.at(-1).includes('--ignore-submodules=dirty') && gitCalls.at(-1).includes('core.fsmonitor=false'));
+shared.clear();
+for (const [scope,code,runs] of [['global',0,1],['system',0,1],['worktree',0,0],['local',1,1],['local',128,0],['local',129,0],['global',129,1]]) {
+  Object.assign(configured,{scope,code});
+  statuses = statusRuns();
+  repo.file.requestRefresh(cx); await finish();
+  assert.equal(statusRuns()-statuses,runs,`config scope ${scope}, exit ${code}`);
+}
+gitMock = null; shared.clear();
+
+// The tree is not read while its panel is out of sight.
+const tree = (hidden,active,mod) => ({id:'root',children:[{id:'panel',hidden,children:[{id:'panel-body',type:'stack',active,
+  children:[{id:'files',content:{mod}},{id:'changes'}]}]}]});
+const ownMod = staged ? 'herdr-kit-files' : 'personal-files';
+const side = view({transfer:true,pdf:true});
+propsValue = {transfer:true,pdf:true};
+layoutValue = tree(true,'files',ownMod); assert.equal(side.shown(),false);
+layoutValue = tree(false,'changes',ownMod); assert.equal(side.shown(),false);
+layoutValue = tree(false,'files',ownMod); assert.equal(side.shown(),true);
+layoutValue = tree(true,'files','files'); assert.equal(side.shown(),true,'Another mod\'s Files block says nothing about this one');
+layoutValue = null; assert.equal(side.shown(),true);
+propsValue = {folder:'/pinned'}; layoutValue = tree(true,'files',ownMod); assert.equal(side.shown(),true);
+const paced = panel();
+propsValue = {transfer:true,pdf:true}; layoutValue = tree(true,'files',ownMod);
+runs = listingRuns;
+paced.file.tick(cx); await finish();
+assert.equal(listingRuns,runs);
+assert.equal(paced.file.stale,true,'A skipped reading is made up when the panel returns');
+propsValue = paced.props; layoutValue = null;
+paced.file.tick(cx); await finish();
+assert.equal(listingRuns,runs+1);
+paced.file.tick(cx); await finish();
+assert.equal(listingRuns,runs+1,'Ticks between intervals read nothing');
+paced.file.refreshedAt -= 10_000; windowActive = false;
+paced.file.tick(cx); await finish();
+assert.equal(listingRuns,runs+1,'An inactive window is read less often');
+windowActive = true;
+paced.file.tick(cx); await finish();
+assert.equal(listingRuns,runs+2);
+paced.file.quiet = 6; paced.file.refreshedAt -= 10_000;
+paced.file.tick(cx); await finish();
+assert.equal(listingRuns,runs+2,'A steady listing on another machine is read every 30 seconds');
+paced.file.refreshedAt -= 20_000;
+paced.file.tick(cx); await finish();
+assert.equal(listingRuns,runs+3);
+assert.equal(paced.file.quiet,7);
+
+// A long transfer continues across helper runs, can be cancelled, and resumes after an interruption.
+const jobPath = staged ? '/data/herdr-mod-kit/files/jobs/' : '/data/personal-files/jobs/';
+const longProps = {mode:'job',overlay:'long',transfer:true,requests:[{action:'upload',source:'big.bin',directory:'/project',on:'lab',job:'long'}]};
+function longJob(...replies) {
+  bridgeReplies.push(...replies);
+  const worker = view(longProps);
+  worker.work(cx);
+  return worker;
+}
+bridgeResult = {ok:true,path:'/project/big.bin'};
+let sent = jobs.length;
+let long = longJob({ok:true,partial:true,resume:{offset:1}},{ok:true,partial:true,resume:{offset:2}});
+await finish();
+assert.deepEqual(jobs.slice(sent).map(q => q.resume),[undefined,{offset:1},{offset:2}],'Each run continues from the last');
+assert.equal(long.index,1);
+long = longJob({ok:false,code:'cancelled',error:'Transfer cancelled.'});
+render(long,longProps);
+click('cancel-job'); click('cancel-job');
+assert.equal(written.length,1,'Cancel is asked once');
+assert.deepEqual(written[0],['C:/app' + jobPath + 'long.cancel','1',null]);
+render(long,longProps);
+assert.equal(ids.get('cancel-job').styles.disabled[0],true);
+await finish();
+assert.ok(render(long,longProps).contents[0].contents.includes('Cancelled'));
+assert.equal(long.busy,false);
+long.work(cx);
+assert.equal(tasks.length,0,'A cancelled transfer does not start again');
+sent = jobs.length;
+long = longJob({ok:true,partial:true,resume:{offset:3}});
+long.cancelling = true;
+await finish();
+assert.deepEqual(jobs.slice(sent).map(q => q.action),['upload','discard'],'Without the cancel file, the staged part is removed between runs');
+assert.deepEqual(jobs.at(-1).resume,{offset:3});
+assert.equal(long.result.cancelled,true);
+long = longJob({ok:false,code:'connection',error:'Link dropped',resume:{offset:5}});
+await finish();
+checkFooter(render(long,longProps),'close-job','retry-file');
+click('retry-file'); await finish();
+assert.deepEqual(jobs.at(-1).resume,{offset:5},'Retry continues an interrupted transfer');
+assert.equal(long.index,1);
+long = longJob({ok:false,code:'connection',error:'Link dropped',resume:{offset:7}});
+await finish();
+render(long,longProps);
+sent = jobs.length;
+click('close-job'); await finish();
+assert.deepEqual(jobs.slice(sent).map(q => [q.action,q.resume?.offset,q.on]),[['discard',7,'lab']],'Closing removes what an interrupted transfer staged');
+assert.equal(closed.at(-1),'long');
+long = longJob({ok:false,code:'transfer',error:'Upload verification failed'});
+await finish();
+render(long,longProps);
+sent = jobs.length;
+click('close-job');
+assert.equal(jobs.length,sent,'Nothing is staged after a failure that cannot continue');
+bridgeResult = {ok:true,path:'/download'};
 
 const windows = panel('C:\\project\\',null);
 render(windows.file,windows.props);

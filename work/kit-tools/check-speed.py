@@ -53,11 +53,15 @@ def main():
             for transport in ('local','core loopback'):
                 client=module.RemoteClient(None,'unused') if transport=='local' else CoreLoopback(module)
                 times=[]
+                # On this computer the current helper copies directly, as the app does.
+                direct=transport=='local' and hasattr(module,'local_upload')
                 for _ in range(3):
                     start=time.perf_counter()
-                    module.upload(client,source,str(folder),overwrite=True)
+                    if direct:module.local_upload(source,str(folder),overwrite=True)
+                    else:module.upload(client,source,str(folder),overwrite=True)
                     middle=time.perf_counter()
-                    result=module.download(client,(folder/source.name).as_posix(),dest,overwrite=True)
+                    if direct:result=module.local_download((folder/source.name).as_posix(),dest,overwrite=True)
+                    else:result=module.download(client,(folder/source.name).as_posix(),dest,overwrite=True)
                     times.append((middle-start,time.perf_counter()-middle))
                     assert Path(result['path']).read_bytes()==source.read_bytes()
                 print(label,transport,'4 MiB median seconds (upload, download)',

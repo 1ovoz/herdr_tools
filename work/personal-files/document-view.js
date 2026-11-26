@@ -10,6 +10,12 @@ const modes = { ts:"js", tsx:"js", jsx:"js", ps1:"powershell", yml:"yaml", jsonc
 const POLL_MS = 2000;
 const MIN_ZOOM = 0.5, MAX_ZOOM = 2, ZOOM_STEP = 0.25;
 const PAGE_LEFT = 12;
+// Pages one helper run renders together, and how far it reads ahead once the screen is complete.
+const PAGE_BATCH = 3, PAGE_AHEAD = 2;
+// Rendered pages kept after they scroll away. The helper protects their bitmaps for ten minutes.
+const PAGE_KEEP = 12, PAGE_KEEP_CHARS = 150000, PAGE_STALE_MS = 480000;
+// A visible page that fails is asked again after these waits, then left until zoom, reload or a click.
+const PAGE_RETRY_MS = [2000, 8000, 30000];
 
 // Keep fenced code literal. Other blocks use native Markdown without embedded HTML or image requests.
 function markdownBlocks(source) {
@@ -130,6 +136,7 @@ export class DocumentView extends View {
     this.sizes = [];
     this.requestVersion = 0;
     this.renderingPage = false;
+    this.failed = new Map();
     this.docFocus = cx.focus_handle();
     if (checking() || !p.source) return;
     this.checkForChanges(cx);
@@ -161,11 +168,15 @@ export class DocumentView extends View {
       const previousWarning=this.documentWarning;
       let refreshed=false;
       try {
-        if (this.revision && !afterIdle) {
+        if (this.revision) {
           const revision = (await this.request("revision")).revision.join(":");
           if (revision === this.revision) {
             this.pollDelay=Math.min(16000,(this.pollDelay || POLL_MS)*2);
-            this.documentWarning = null; return;
+            this.documentWarning = null;
+            // The file is unchanged, but cached bitmaps expire while a tab is away: ask again for what is shown.
+            if (this.document.mode === "pdf") this.queuePages(task);
+            else if (this.isPicture && afterIdle) { this.picture=await this.request("image"); refreshed=true; }
+            return;
           }
         }
         if (this.document.mode === "pdf") await this.readPdf(task);
@@ -230,8 +241,8 @@ export class DocumentView extends View {
     this.revision = value.revision.join(":");
     this.cachedPdf = value.pdf;
     this.sizes = value.sizes;
-    this.pages = new Map([[value.page,{...value,rasterWidth:width}]]);
-    this.failedPage = null;
+    this.pages = new Map([[value.page,{...value,rasterWidth:width,at:Date.now()}]]);
+    this.failed = new Map();
     this.selection = null;
     this.scroll.y = index || fraction > 0 ? restorePosition(this.flow(),index,fraction) : 0;
     this.pendingPosition = null;
@@ -247,38 +258,66 @@ export class DocumentView extends View {
 
   queuePages(cx) {
     if (this.renderingPage || !this.sizes.length) return;
-    const flow = this.flow(), width = this.rasterWidth(flow);
+    const flow = this.flow(), width = this.rasterWidth(flow), now = Date.now();
+    const failed = this.failed ||= new Map();
+    const wanted = i => {
+      const miss = failed.get(i), data = this.pages.get(i);
+      if (miss && now < miss.until) return false;
+      return !data || data.rasterWidth < width || now-data.at > PAGE_STALE_MS;
+    };
     const visible = visiblePages(flow,this.scroll.y);
     const center = this.scroll.y+flow.viewportHeight*.35;
     visible.sort((a,b)=>Math.abs(flow.pages[a].top-center)-Math.abs(flow.pages[b].top-center));
-    const index = visible.find(i=>i!==this.failedPage && (this.pages.get(i)?.rasterWidth || 0)<width);
-    if (index === undefined) return;
+    // Every page missing from the screen goes into one helper run, nearest the reading position first.
+    let batch = visible.filter(wanted).slice(0,PAGE_BATCH);
+    if (!batch.length && this.isShown()) {
+      // The screen is complete: read one page ahead in the direction of travel, so it is ready on arrival.
+      const step = this.scrollDirection || 1;
+      const edge = step > 0 ? Math.max(...visible) : Math.min(...visible);
+      for (let ahead = 1; ahead <= PAGE_AHEAD && !batch.length; ahead++) {
+        const i = edge+step*ahead;
+        if (i >= 0 && i < this.sizes.length && wanted(i)) batch = [i];
+      }
+    }
+    if (!batch.length) {
+      const retry = Math.min(...visible.map(i=>failed.get(i)?.until ?? Infinity));
+      if (Number.isFinite(retry) && !this.retryTimer) {
+        this.retryTimer = cx.timer?.after(Math.max(250,retry-now),task=>{ this.retryTimer = null; this.queuePages(task); });
+      }
+      return;
+    }
     const version = this.requestVersion;
     this.renderingPage = true;
     cx.spawn(async task => {
       try {
         const remote = this.document.on !== null;
-        const previous=this.pages.get(index);
+        const asked = batch.map(i=>!this.pages.get(i)?.chars);
+        const fields = {pages:batch,width,chars:asked};
         let result;
         try {
-          result=await this.request(remote ? "render" : "preview",{source:this.cachedPdf,on:null,page:index,width,chars:!previous});
+          result=await this.request(remote ? "render" : "preview",{source:this.cachedPdf,on:null,...fields});
         } catch (error) {
           if (!remote || error.code!=="cache_miss") throw error;
-          result=await this.request("preview",{page:index,width});
+          result=await this.request("preview",fields);
           if (version===this.requestVersion && result.revision.join(":")!==this.revision) {
             await this.readPdf(task); return;
           }
         }
-        if (version === this.requestVersion && result.page === index && (remote || result.revision?.join(":")===this.revision)) {
-          this.pages.set(index,{...result,chars:previous?.chars ?? result.chars,rasterWidth:width});
-          const needed=new Set(visiblePages(this.flow(),this.scroll.y));
-          for(const other of this.pages.keys()) if(!needed.has(other)) this.pages.delete(other);
-        } else if(version===this.requestVersion) {
-          this.failedPage=index;
+        if (version !== this.requestVersion) return;
+        const rendered = remote || result.revision?.join(":")===this.revision ? result.rendered || [] : [];
+        const at = Date.now();
+        for (const page of rendered) {
+          const previous = this.pages.get(page.page);
+          const chars = asked[batch.indexOf(page.page)] ? page.chars : previous?.chars ?? page.chars;
+          this.pages.set(page.page,{...page,chars:chars || [],rasterWidth:width,at});
+          failed.delete(page.page);
         }
+        // A reply may stop early at its text budget; those pages are simply asked for again.
+        if (!rendered.length) this.failPages(batch);
+        this.trimPages();
       } catch (error) {
         if (version === this.requestVersion) {
-          this.failedPage=index;
+          this.failPages(batch);
           this.documentWarning=String(error);
         }
       } finally {
@@ -289,9 +328,37 @@ export class DocumentView extends View {
     });
   }
 
+  failPages(pages) {
+    const now = Date.now(), failed = this.failed ||= new Map();
+    const shown = new Set(visiblePages(this.flow(),this.scroll.y));
+    for (const i of pages) {
+      // A page read ahead waits until it is on screen. A visible one is retried a few times, further apart.
+      const count = shown.has(i) ? (failed.get(i)?.count || 0)+1 : 0;
+      const wait = count ? PAGE_RETRY_MS[count-1] : 15000;
+      failed.set(i,{count,until:wait === undefined ? Infinity : now+wait});
+    }
+  }
+
+  // Pages scrolled out of view stay known, so scrolling back starts no helper. The farthest go first.
+  trimPages() {
+    const flow = this.flow();
+    const shown = new Set(visiblePages(flow,this.scroll.y));
+    const here = pageAt(flow,this.scroll.y);
+    const spare = [...this.pages.keys()].filter(i=>!shown.has(i)).sort((a,b)=>Math.abs(b-here)-Math.abs(a-here));
+    let chars = 0;
+    for (const data of this.pages.values()) chars += data.chars?.length || 0;
+    for (const i of spare) {
+      if (this.pages.size <= PAGE_KEEP && chars <= PAGE_KEEP_CHARS) break;
+      chars -= this.pages.get(i).chars?.length || 0;
+      this.pages.delete(i);
+    }
+  }
+
   moveTo(x,y,cx) {
     const flow = this.flow();
-    this.scroll = {x:Math.max(0,Math.min(flow.maxX,x)),y:Math.max(0,Math.min(flow.maxY,y))};
+    const next = {x:Math.max(0,Math.min(flow.maxX,x)),y:Math.max(0,Math.min(flow.maxY,y))};
+    if (next.y !== this.scroll.y) this.scrollDirection = next.y > this.scroll.y ? 1 : -1;
+    this.scroll = next;
     this.queuePages(cx);
     if (this.viewerPane && this.sizes.length) {
       this.savePositionTimer?.cancel();
@@ -314,7 +381,7 @@ export class DocumentView extends View {
       x = (x + offsetX)*next/this.zoom - offsetX;
     }
     this.zoom = next;
-    this.failedPage = null;
+    this.failed = new Map();
     this.moveTo(x,restorePosition(this.flow(),index,fraction,offsetY),cx);
   }
 
@@ -353,6 +420,8 @@ export class DocumentView extends View {
   startSelection(event,cx) {
     if (this.viewerPane && focused()?.pane!==this.viewerPane) run("pane.focus",{pane:this.viewerPane});
     this.docFocus?.focus();
+    // A click on the page also retries pages that stopped loading.
+    if (this.failed?.size) { this.failed = new Map(); this.queuePages(cx); }
     const start=this.point(event,true);
     this.selecting=Boolean(start);
     this.selection=start ? {start,end:start} : null;

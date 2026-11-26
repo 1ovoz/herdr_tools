@@ -42,6 +42,7 @@ function start(props = {}) {
     exec: async (command,args,{on}) => {
       if (!args.includes("-c")) { logs.push(args.slice(-2)); return {code:0}; }
       return new Promise(resolve => calls.push({host:on, command, providers:Array.from(args.slice(args.indexOf("-c")+2)),
+        isolated:args.indexOf("-I") >= 0 && args.indexOf("-I") < args.indexOf("-c"),
         reply: value => resolve({code:0,stdout:JSON.stringify(value)}), fail: () => resolve({code:1,stdout:""})}));
     }
   };
@@ -77,6 +78,7 @@ await update(panel);
 assert.equal(calls.length, 1, "Same-machine providers share one collector");
 assert.equal(calls[0].host, config.machine);
 assert.deepEqual(calls[0].providers, ["codex", "claude"]);
+assert.equal(calls[0].isolated, true, "The token reader takes no modules from its working directory");
 if (staged) assert.equal(calls[0].command, config.python);
 calls[0].reply({at:now/1000,codex:{used:12},claude:{used:35,fable:{used:5}}});
 await update(panel);

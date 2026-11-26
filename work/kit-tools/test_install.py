@@ -65,6 +65,21 @@ class Reinstall(unittest.TestCase):
         self.install(None)
         self.assertEqual(list((self.state_file.parent/'backups').iterdir()),before)
 
+    def test_old_backups_are_pruned_and_the_current_one_kept(self):
+        backups=self.state_file.parent/'backups'
+        for round in range(8):
+            (self.common/'bridge.py').write_text(f'helper {round}')
+            self.install(None)
+        kept=sorted(item.name for item in backups.iterdir())
+        self.assertEqual(len(kept),5)
+        self.assertIn(kit.read_json(self.state_file)['backup'],kept)
+        self.assertEqual((backups/kept[-1]/kit.HELPERS/'bridge.py').read_text(),'helper 6')
+        note=backups/'my-notes';note.mkdir()
+        (self.common/'bridge.py').write_text('helper 9')
+        self.install(None)
+        self.assertTrue(note.is_dir(),'Only the installer\'s own dated folders are removed')
+        self.assertEqual(len(list(backups.iterdir())),6)
+
     def test_owned_modification_is_preserved(self):
         before=self.state_file.read_bytes()
         self.target.write_text('local edit')

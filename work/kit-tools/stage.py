@@ -159,16 +159,16 @@ bridge = adapt(
     ("'personal-files'", "'herdr-mod-kit'/'files'"),
     ("Reinstall the personal-files helper.", "Run the PDF diagnostics."),
     ('    parser=argparse.ArgumentParser()', '    global active_log\n    parser=argparse.ArgumentParser()'),
-    ("    action=q['action']\n    try:", """    action=q['action']
+    ("    unfinished=False\n    try:", """    unfinished=False
     feature = 'pdf' if action in ('preview', 'render', 'revision', 'image', 'text') else 'transfer'
     active_log = (args.home, feature, action, job)
     if action != 'revision':
         record(args.home, feature, action, 'start', job)
     try:"""),
-    ("    print(json.dumps({'ok':True,**result},ensure_ascii=False))",
+    ("    print(json.dumps({'ok':True,**result},ensure_ascii=False,separators=(',',':')))",
      """    if action != 'revision':
-        record(args.home, feature, action, 'ok', job)
-    print(json.dumps({'ok':True,**result},ensure_ascii=False))"""),
+        record(args.home, feature, action, 'partial' if unfinished else 'ok', job)
+    print(json.dumps({'ok':True,**result},ensure_ascii=False,separators=(',',':')))"""),
     ("    try:main()", "    active_log = None\n    try:main()"),
     ("    except Exception as e:\n        print(json.dumps({'ok':False,",
      """    except Exception as e:

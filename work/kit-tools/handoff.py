@@ -14,7 +14,7 @@ installer = out / f'Herdr-Mod-Kit-Windows-x64-v{VERSION}.zip'
 archive = out / f'Herdr-Mod-Kit-Dev-v{VERSION}.zip'
 source_files = {
     '': ['HANDOFF.md', 'README.md', '.gitignore', '.gitattributes'],
-    'docs': ['remote-work.md'],
+    'docs': ['remote-work.md', 'changes-v1.7.0.md'],
     'docs/screenshots': ['files-menu.png', 'files-drag.png', 'pdf-split.png', 'local-usage.png',
                          'usage-sources.png', 'markdown-preview.png', 'image-preview.png',
                          'file-groups.png', 'layout-menu.png', 'delete-confirmation.png'],

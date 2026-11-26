@@ -1,6 +1,6 @@
-# Herdr Mod Kit · Windows x64 v1.6.0
+# Herdr Mod Kit · Windows x64 v1.7.0
 
-Windows x64용 Herdr 데스크톱 모드입니다. 사용량 표시, 파일 전송, PDF 뷰어, 탭 관리를 함께 설치하거나 골라서 사용할 수 있습니다. 배포 파일명은 v1.6.0이며, 기존 설치를 구분하는 내부 버전은 1.6.0입니다.
+Windows x64용 Herdr 데스크톱 모드입니다. 사용량 표시, 파일 전송, PDF 뷰어, 탭 관리를 함께 설치하거나 골라서 사용할 수 있습니다. 배포 파일명은 v1.7.0이며, 기존 설치를 구분하는 내부 버전은 1.7.0입니다.
 
 ## 새 Windows PC에 설치하기
 
@@ -14,7 +14,7 @@ py -3 -X utf8 .\kit.py install --usage-machine my-server --activate
 
 `py`가 없는 PC에서는 `python`을 사용합니다. Windows에 Codex·Claude Code를 직접 로그인해 사용하는 경우 `--usage-machine local`을 지정할 수 있습니다. 원격 조회는 해당 머신의 `python3` 및 두 CLI의 구독 로그인 파일이 필요합니다. Fable은 계정에서 별도 한도를 제공하는 경우에 표시됩니다. 로그인 파일이나 원격 연결 정보는 ZIP에 들어 있지 않습니다.
 
-업데이트가 적용되면 하단바 오른쪽에 `mod 1.6.0`이 보입니다. 사용량 막대를 눌러 **Sources**를 열고, Codex와 Claude Code가 읽을 머신을 각각 고르세요. 예를 들어 Codex는 **local**, Claude Code는 기존 Herdr 머신 **lab**을 선택할 수 있습니다. **Install default**는 설치 당시 공통 대상을 사용합니다.
+업데이트가 적용되면 하단바 오른쪽에 `mod 1.7.0`이 보입니다. 사용량 막대를 눌러 **Sources**를 열고, Codex와 Claude Code가 읽을 머신을 각각 고르세요. 예를 들어 Codex는 **local**, Claude Code는 기존 Herdr 머신 **lab**을 선택할 수 있습니다. **Install default**는 설치 당시 공통 대상을 사용합니다.
 
 ## 기능
 
@@ -25,13 +25,19 @@ PNG·JPEG와 Markdown 파일도 문서 탭에서 열립니다. 사진은 창에 
 | 기능 | 동작 | 코드 | 로그 |
 | --- | --- | --- | --- |
 | `usage` | 오른쪽에 Codex 막대와 Claude `W`·`F` 두 줄, 사용률과 초기화까지 남은 시간 표시 | `mods/herdr-kit-usage/` | `usage.jsonl` |
-| `transfer` | Files에 파일 드롭, 폴더 간 드래그 이동, 우클릭 다운로드·다운로드 후 열기, 전송 시 덮어쓰기 확인 | `mods/herdr-kit-files/` | `transfer.jsonl` |
+| `transfer` | Files에 파일 드롭, 폴더 간 드래그 이동, 우클릭 다운로드·다운로드 후 열기, 전송 시 덮어쓰기 확인, 전송 취소와 이어 보내기 | `mods/herdr-kit-files/` | `transfer.jsonl` |
 | `pdf` | 파일 링크를 `Ctrl+클릭`해 PDF·텍스트 탭 열기, PDF·Files 항목을 좌우로 드래그해 분할, Ctrl+휠 확대·축소, 고해상도 렌더링, 연속 세로 스크롤, 파일 자동 갱신, 텍스트 선택 | `mods/herdr-kit-pdf/`, `mods/herdr-kit-tabs/`, `mods/herdr-kit-links/` | `pdf.jsonl` |
 | `tabs` | 상단 Layout으로 좌우·상하 분할과 한 창 확대·복원, 분할 창 제목을 탭 줄에 드롭해 새 탭으로 이동, `Ctrl+W`로 현재 탭 닫기 | `mods/herdr-kit-pane/` | `tabs.jsonl` |
 
 Files에서 파일을 우클릭하면 오른쪽 분할 열기, 잘라내기·복사, 저장 위치를 고르는 다운로드, 전체·상대 경로 복사, 이름 바꾸기와 영구 삭제 확인을 사용할 수 있습니다. 잘라내거나 복사한 파일은 같은 머신의 폴더 행 또는 루트 드롭 영역에 붙여넣습니다. 이름 충돌 시 기존 파일을 보존합니다. 영구 삭제는 선택한 개별 파일에 적용됩니다.
 
 Files 안에서 파일을 끌면 포인터 옆에 파일명이 표시됩니다. 강조된 폴더 행에 놓으면 그 폴더로 이동합니다. Files 상단 드롭 영역에 놓으면 현재 루트 폴더로 이동합니다. 같은 머신과 파일시스템에서 동작하며 목적지에 같은 이름이 있으면 두 파일을 모두 보존합니다. Windows에서 진행률 파일이 잠시 잠겨도 업로드가 계속됩니다.
+
+큰 파일은 여러 번에 나눠 이어 보냅니다. 작업 창의 **Cancel**로 멈출 수 있고, 연결이 끊긴 뒤 **Retry**를 누르면 끊긴 곳부터 이어 갑니다. 서버에 올린 새 파일은 그 계정의 기본 권한을 받고, 덮어쓴 파일은 기존 권한을 유지합니다.
+
+저장소 자체 설정(`.git/config`)에 filter 프로그램이 지정된 폴더에서는 Files가 Git 표시를 계산하지 않고 목록 아래에 안내 줄을 보여 줍니다. 신뢰하는 저장소라면 그 줄을 눌러 표시를 켜세요. 하위 모듈은 커밋이 바뀐 경우에만 표시됩니다.
+
+PDF 페이지가 열리지 않으면 세 번 다시 시도한 뒤 멈춥니다. 페이지를 클릭하거나 확대하면 다시 시도합니다.
 
 Claude 사용량이 HTTP 429를 반환하면 마지막으로 확인한 수치를 표시합니다. 다음 요청은 서버의 `Retry-After`와 재시도 간격 중 더 긴 시간이 지난 뒤에 보냅니다.
 

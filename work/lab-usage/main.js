@@ -129,8 +129,9 @@ export default class LabUsage extends View {
         try {
           const source = await script;
           if (!source) throw new Error("Collector missing");
+          // -I: the collector reads login tokens, and its working directory must not supply its modules.
           const response = await exec(host === null ? this.config.python : "python3",
-            ["-X", "utf8", "-c", source, ...batch], {on:host, timeout:25000});
+            ["-I", "-X", "utf8", "-c", source, ...batch], {on:host, timeout:25000});
           if (response.code === 0) result = JSON.parse(response.stdout);
         } catch {}
         for (const provider of batch) {

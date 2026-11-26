@@ -16,7 +16,7 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parent
-VERSION = '1.6.0'
+VERSION = '1.7.0'
 FEATURES = ('usage', 'transfer', 'pdf', 'tabs')
 MODS = {'usage':'herdr-kit-usage', 'transfer':'herdr-kit-files', 'pdf':'herdr-kit-pdf', 'tabs':'herdr-kit-pane'}
 TABS_MOD = 'herdr-kit-tabs'
@@ -302,6 +302,18 @@ def copy_atomic(source, target, before_replace=None, created_dirs=None):
         Path(temp).unlink(missing_ok=True)
 
 
+def prune_backups(folder, keep_name, keep=5):
+    """Each changed reinstall saves the files it replaces. Keep the newest few and the one the state names."""
+    try:
+        stamps=sorted(item for item in folder.iterdir()
+                      if re.fullmatch(r'\d{8}-\d{6}-\d{6}',item.name) and item.is_dir() and not item.is_symlink())
+    except OSError:
+        return
+    for item in stamps[:-keep]:
+        if item.name!=keep_name:
+            shutil.rmtree(item,ignore_errors=True)
+
+
 def install(options, home, app, core):
     with install_lock(home):
         install_locked(options, home, app, core)
@@ -434,6 +446,7 @@ def install_locked(options, home, app, core):
                     directory.rmdir()
             raise
     record(home,'installer','install','ok')
+    prune_backups(state_dir/'backups',read_json(state_file).get('backup'))
     if 'tabs' in features:
         record(home,'tabs','install_shortcut',key_code)
         if key_code!='ok':

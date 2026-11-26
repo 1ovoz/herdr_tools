@@ -1,7 +1,7 @@
 // A lazy file browser for the focused pane's folder, with bounded read-only previews.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, Button, Editor, EditorState, Input, InputState } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, props, checking, appHome, openOverlay, closeOverlay, shared, setShared, run, layout, notify } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, settings, window, props, checking, appHome, openOverlay, closeOverlay, shared, setShared, run, layout, notify } from "herdr";
 import { bridge, jobId, uploadRequests } from "./actions.js";
 import { DocumentView } from "./document-view.js";
 import { dropSide } from "./document-flow.js";
@@ -18,8 +18,17 @@ function location() {
 const key = () => JSON.stringify(location());
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
 const PER_FOLDER = 500, TOTAL = 5000;
+// Listing starts programs, so reported changes wait this long after the last listing.
+const MIN_REFRESH_MS = 2000;
+// The whole tree is read again at these intervals: on another machine, while its listing keeps changing or
+// has been steady; on this computer, with or without a working folder watch; and when the window is inactive.
+const REMOTE_MS = 10000, REMOTE_QUIET_MS = 30000, WATCHED_MS = 60000, UNWATCHED_MS = 10000, INACTIVE_MS = 60000;
+const GIT_ONLY = "\0git";
+// Programs a repository's own config can make `git status` run.
+const GIT_COMMAND_KEYS = "^(filter\\..*\\.(clean|smudge|process)|core\\.fsmonitor)$";
 const CHANGE_DIALOG_HEIGHT = 210, JOB_DIALOG_HEIGHT = 300;
 const CLIPBOARD = "personal-files.clipboard";
+const TRUSTED = "personal-files.trusted-repositories";
 const FILE_ACTIONS = [
   {id:"open-side", label:"Open to the Side", feature:"pdf", key:"ctrl-enter", hint:"Ctrl+Enter"},
   {id:"cut", label:"Cut", feature:"transfer", key:"ctrl-x", hint:"Ctrl+X"},
@@ -53,28 +62,106 @@ function findNode(node,id) {
   return null;
 }
 
-async function directory(path, on) {
-  const windowsDirectory = async () => {
-    // Windows PowerShell otherwise uses the console code page; exec decodes UTF-8.
-    // Links keep directory attributes even when dangling; check their target.
-    // Other reparse points (OneDrive's folders) have no LinkType and are folders.
-    const r = await exec("powershell", ["-NoProfile", "-Command", "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); & { @(Get-ChildItem -LiteralPath . -Force -ErrorAction Stop | Where-Object Name -ne '.git' | Select-Object -First 501 | ForEach-Object { @{ name=$_.Name; dir=($_.PSIsContainer -and (-not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -or -not $_.LinkType -or ($_.Target -and [IO.Directory]::Exists(([IO.Path]::Combine([IO.Path]::GetDirectoryName($_.FullName), $_.Target[0])))))) } }) | ConvertTo-Json -Compress }"], { on, cwd:path });
-    if (r.code !== 0) throw new Error(r.stderr || "Cannot list this folder");
-    const result = JSON.parse(r.stdout || "[]");
-    return Array.isArray(result) ? result : [result];
-  };
-  if (!on && window()?.platform === "windows") return windowsDirectory();
-  const script = 'n=0; for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; name=${p##*/}; [ "$name" = .git ] && continue; if [ -d "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; n=$((n+1)); [ "$n" -gt 500 ] && break; done; test -d "$1"';
-  let r;
-  try { r = await exec("sh", ["-c", script, "files", path], { on }); }
-  catch (e) {
-    if (on && String(e).includes("cannot start sh: program not found")) return windowsDirectory();
-    throw e;
+let systemPowerShell = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+
+async function windowsDirectory(path, on) {
+  // Windows PowerShell otherwise uses the console code page; exec decodes UTF-8.
+  // Links keep directory attributes even when dangling; check their target.
+  // Other reparse points (OneDrive's folders) have no LinkType and are folders.
+  const args = ["-NoProfile", "-Command", "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); & { @(Get-ChildItem -LiteralPath . -Force -ErrorAction Stop | Where-Object Name -ne '.git' | Select-Object -First 501 | ForEach-Object { @{ name=$_.Name; dir=($_.PSIsContainer -and (-not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -or -not $_.LinkType -or ($_.Target -and [IO.Directory]::Exists(([IO.Path]::Combine([IO.Path]::GetDirectoryName($_.FullName), $_.Target[0])))))) } }) | ConvertTo-Json -Compress }"];
+  let r = null;
+  // The listed folder is the working directory, so on this computer the system's own PowerShell is named in full.
+  if (!on && systemPowerShell) {
+    try { r = await exec(systemPowerShell, args, { cwd:path }); }
+    catch { r = null; }
+  }
+  if (!r) {
+    r = await exec("powershell", args, { on, cwd:path });
+    if (!on) systemPowerShell = null;
   }
   if (r.code !== 0) throw new Error(r.stderr || "Cannot list this folder");
-  const fields = r.stdout.split("\0"), out = [];
-  for (let i = 0; i + 1 < fields.length; i += 2) out.push({ name: fields[i + 1], dir: fields[i] === "d" });
+  const result = JSON.parse(r.stdout || "[]");
+  return Array.isArray(result) ? result : [result];
+}
+
+// Lists several folders in one program. Each answer is the folder's entries, null when it is not a folder,
+// or the error that stopped its listing.
+async function listFolders(paths, on) {
+  const each = async () => {
+    const out = [];
+    for (const path of paths) out.push(await windowsDirectory(path, on).catch(error => error instanceof Error ? error : new Error(String(error))));
+    return out;
+  };
+  if (!on && window()?.platform === "windows") return each();
+  const script = 'for d in "$@"; do if [ -d "$d" ]; then printf "D\\0%s\\0" 1; else printf "D\\0%s\\0" 0; continue; fi; n=0; for p in "$d"/* "$d"/.[!.]* "$d"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; name=${p##*/}; [ "$name" = .git ] && continue; if [ -d "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; n=$((n+1)); [ "$n" -gt 500 ] && break; done; done; exit 0';
+  const out = [];
+  for (let first = 0; first < paths.length; first += 40) {
+    const group = paths.slice(first, first + 40);
+    let r;
+    try { r = await exec("sh", ["-c", script, "files", ...group], { on }); }
+    catch (e) {
+      if (on && String(e).includes("cannot start sh: program not found")) return each();
+      throw e;
+    }
+    if (r.code !== 0) throw new Error(r.stderr || "Cannot list this folder");
+    const fields = r.stdout.split("\0"), found = [];
+    for (let i = 0; i + 1 < fields.length; i += 2) {
+      if (fields[i] === "D") found.push(fields[i + 1] === "1" ? [] : null);
+      else found.at(-1)?.push({ name: fields[i + 1], dir: fields[i] === "d" });
+    }
+    if (found.length !== group.length) throw new Error("Cannot list this folder");
+    out.push(...found);
+  }
   return out;
+}
+
+// The shown folders a batch of changed paths touches: "" is the root. Null means read everything again.
+function changedFolders(paths, root, expanded) {
+  const tidy = value => value.replace(/\\/g, "/").replace(/\/+$/, "");
+  const windows = /^[A-Za-z]:(?:\/|$)|^\/\//.test(tidy(root));
+  const fold = value => windows ? value.toLowerCase() : value;
+  const base = fold(tidy(root));
+  const shown = new Map([["", ""], ...[...expanded].map(folder => [fold(folder), folder])]);
+  const out = new Set();
+  for (const raw of paths) {
+    const path = fold(tidy(String(raw)));
+    if (path === base || !path.startsWith(base + "/")) return null;
+    const relative = path.slice(base.length + 1);
+    if (relative === ".git" || relative.startsWith(".git/")) { out.add(GIT_ONLY); continue; }
+    const slash = relative.lastIndexOf("/"), parent = slash < 0 ? "" : relative.slice(0, slash);
+    if (shown.has(parent)) out.add(shown.get(parent));
+    if (shown.has(relative)) out.add(shown.get(relative));
+  }
+  return out;
+}
+
+// A repository's config can name programs that `git status` would run. Listing a folder must not run what the
+// folder supplies, so its marks are skipped. Config from the account and the system is the person's own.
+async function repositoryRunsPrograms(cwd, on) {
+  const ask = flags => exec("git", ["config", ...flags, "-z", "--get-regexp", GIT_COMMAND_KEYS], { cwd, on });
+  try {
+    const scoped = await ask(["--show-scope"]);
+    if (scoped.code === 0) {
+      const fields = scoped.stdout.split("\0");
+      for (let i = 0; i + 1 < fields.length; i += 2) if (!["system", "global", "command"].includes(fields[i])) return true;
+      return false;
+    }
+    if (scoped.code === 1) return false;
+    if (scoped.code !== 129) return true;
+    // Git before 2.26 cannot report scopes: ask for the repository's own config instead.
+    return (await ask(["--local", "--includes"])).code !== 1;
+  } catch { return true; }
+}
+
+function nodePath(node, id, trail = []) {
+  if (!node) return null;
+  const here = [...trail, node];
+  if (node.id === id) return here;
+  for (const child of node.children || []) {
+    const found = nodePath(child, id, here);
+    if (found) return found;
+  }
+  return null;
 }
 
 export default class Files extends DocumentView {
@@ -125,8 +212,29 @@ export default class Files extends DocumentView {
     this.dropFolder = null;
     if (!checking()) {
       this.refresh(cx);
-      cx.timer.every(10000, cx => this.refresh(cx));
+      cx.timer.every(10000, cx => this.tick(cx));
     }
+  }
+
+  // False while the Files block is hidden, or another panel is in front of it.
+  shown() {
+    try {
+      if (props()?.folder) return true;
+      const path = nodePath(layout(), "files");
+      if (!path || path.at(-1).content?.mod !== "personal-files") return true;
+      return path.every((node, i) => !node.hidden &&
+        !(node.type === "stack" && node.active && path[i + 1] && node.active !== path[i + 1].id));
+    } catch { return true; }
+  }
+
+  // The fallback for changes no watch reports. Nothing is read while the panel is out of sight.
+  tick(cx) {
+    if (!this.shown()) { this.stale = true; return; }
+    if (key() !== this.context?.key) { this.refresh(cx); return; }
+    let every = this.on ? (this.quiet >= 6 ? REMOTE_QUIET_MS : REMOTE_MS) : (this.watched ? WATCHED_MS : UNWATCHED_MS);
+    if (window()?.active === false) every = Math.max(every, INACTIVE_MS);
+    if (!this.stale && Date.now() - (this.refreshedAt || 0) < every - 500) return;
+    this.refresh(cx);
   }
 
   job(requests) {
@@ -403,16 +511,16 @@ export default class Files extends DocumentView {
     });
   }
 
-  dialogButton(id, label, action, style = "secondary") {
+  dialogButton(id, label, action, style = "secondary", disabled = this.busy) {
     const t = theme(), primary = style === "primary", danger = style === "danger";
-    return Button.new(id).accessibility_label(label).disabled(this.busy)
+    return Button.new(id).accessibility_label(label).disabled(disabled)
       .h_flex().items_center().justify_center().flex_none().h(34).min_w(80).px(12)
       .whitespace_nowrap().rounded(6).border_1().font_medium()
       .bg(primary ? t.solid : t.raised).text_color(primary ? t.solid_foreground : danger ? t.ansi1 : t.foreground)
       .border_color(primary ? t.solid : danger ? t.ansi1 : t.input)
       .focus(s=>s.border_color(t.accent))
-      .when(this.busy, el=>el.opacity(0.55))
-      .when(!this.busy, el=>el.cursor_pointer().hover(s=>primary ? s.opacity(0.88) : s.bg(t.hover)))
+      .when(disabled, el=>el.opacity(0.55))
+      .when(!disabled, el=>el.cursor_pointer().hover(s=>primary ? s.opacity(0.88) : s.bg(t.hover)))
       .on_click((_e,cx)=>action(cx)).child(label);
   }
 
@@ -450,16 +558,52 @@ export default class Files extends DocumentView {
     } catch {} finally { this.polling = false; }
   }
 
+  // Asks the running helper to stop. It checks between chunks and removes what it staged.
+  cancelJob(cx) {
+    const job = this.queue?.[this.index]?.job;
+    if (!this.busy || !job || this.cancelling) return;
+    this.cancelling = true;
+    cx.notify();
+    writeTextFile(`${appHome()}/data/personal-files/jobs/${job}.cancel`, "1", null).catch(() => {});
+  }
+
+  // A transfer that stopped part-way keeps a staging file. Remove it when the dialog is dismissed.
+  closeJob(cx) {
+    const {resume,on,job} = this.queue?.[this.index] || {};
+    if (!resume || this.busy) { closeOverlay(props().overlay); return; }
+    this.busy = true;
+    cx.notify();
+    cx.spawn(async () => {
+      try { await bridge({action:"discard",resume,on,job}); } catch {}
+      closeOverlay(props().overlay);
+    });
+  }
+
   work(cx, overwrite = false) {
     if (this.busy || this.index >= this.queue.length) return;
     if (overwrite) this.queue[this.index].overwrite = true;
-    this.busy = true; this.error = null; this.collision = false;
+    this.busy = true; this.error = null; this.collision = false; this.cancelling = false;
     cx.spawn(async cx => {
       try {
         while (this.index < this.queue.length) {
           this.progress = null;
           const {cutId,...request} = this.queue[this.index];
-          const value = await bridge(request);
+          let value = await bridge(request);
+          // A long transfer returns before the app's time limit and continues from where it stopped.
+          while (value.ok && value.partial) {
+            this.queue[this.index].resume = request.resume = value.resume;
+            if (this.cancelling) {
+              await bridge({action:"discard",resume:value.resume,on:request.on,job:request.job});
+              value = {ok:false,code:"cancelled"};
+            } else value = await bridge(request);
+          }
+          // A failure that can continue says where; any other clears it so a retry starts over.
+          this.queue[this.index].resume = value.ok ? undefined : value.resume;
+          if (value.code === "cancelled") {
+            this.result = {cancelled:true};
+            this.index = this.queue.length;
+            return;
+          }
           if (!value.ok) {
             this.error = value.error;
             this.collision = value.code === "exists" && (request.action === "upload" || (request.action === "download" && !request.choose));
@@ -475,7 +619,7 @@ export default class Files extends DocumentView {
           cx.notify();
         }
       } catch (e) { this.error = String(e); }
-      finally { this.busy = false; cx.notify(); }
+      finally { this.busy = false; this.cancelling = false; cx.notify(); }
     });
   }
 
@@ -509,10 +653,12 @@ export default class Files extends DocumentView {
     const progress=this.progress;
     const body = v_flex()
       .child(div().flex_none().text_color(t.muted).truncate().child(current?.source || this.result?.path || ""))
-      .child(div().flex_none().text_color(this.error?t.blocked:t.muted).child(this.error || (this.busy ? (progress ? `${Math.round(progress.done/Math.max(1,progress.total)*100)}% · ${(progress.done/1048576).toFixed(1)} / ${(progress.total/1048576).toFixed(1)} MB` : "Connecting…") : cancelled?"":done?(this.result?.message || `${this.index} operation(s) completed`):"Ready")))
+      .child(div().flex_none().text_color(this.error?t.blocked:t.muted).child(this.error || (this.cancelling ? "Cancelling…" : this.busy ? (progress ? `${Math.round(progress.done/Math.max(1,progress.total)*100)}% · ${(progress.done/1048576).toFixed(1)} / ${(progress.total/1048576).toFixed(1)} MB` : "Connecting…") : cancelled?"":done?(this.result?.message || `${this.index} operation(s) completed`):"Ready")))
       .when(current?.action==="upload",el=>el.child(div().flex_none().text_color(t.dim).truncate().child(`Folder: ${current.directory}`)));
+    const stoppable = this.busy && ["upload","download"].includes(current?.action);
     const actions = h_flex()
-      .child(this.dialogButton("close-job",this.busy ? "Working…" : "Close",()=>closeOverlay(props().overlay)))
+      .child(this.dialogButton("close-job",this.busy ? "Working…" : "Close",cx=>this.closeJob(cx)))
+      .when(stoppable, el=>el.child(this.dialogButton("cancel-job","Cancel",cx=>this.cancelJob(cx),"danger",this.cancelling)))
       .when(this.collision, el=>el.child(this.dialogButton("replace-file","Replace file",cx=>this.work(cx,true),"danger")))
       .when(Boolean(this.error) && !this.collision, el=>el.child(this.dialogButton("retry-file","Retry",cx=>this.work(cx),"primary")));
     return this.renderDialog(JOB_DIALOG_HEIGHT, cancelled ? "Cancelled" : done ? "Completed" : title, body, actions);
@@ -523,8 +669,35 @@ export default class Files extends DocumentView {
     this.watched = root;
     const context = this.context;
     cx.spawn(async cx => {
-      try { while (this.context === context) { await watchFolder(root); if (this.current(context)) this.refresh(cx); } }
+      try {
+        while (this.context === context) {
+          const paths = await (this.watching = watchFolder(root));
+          if (this.current(context)) this.noteChanges(paths, context, cx);
+        }
+      }
       catch { if (this.context === context) this.watched = null; }
+    });
+  }
+
+  // A batch from the watch: read again only the shown folders it touches.
+  noteChanges(paths, context, cx) {
+    const folders = changedFolders(paths, context.cwd, this.folders);
+    if (folders && !folders.size) return;
+    this.touched = !folders || this.touched === "all" ? "all" : new Set([...(this.touched || []), ...folders]);
+    this.scheduleChanges(cx);
+  }
+
+  scheduleChanges(cx) {
+    if (!this.touched || this.changeTimer || this.loading) return;
+    const apart = window()?.active === false ? UNWATCHED_MS : MIN_REFRESH_MS;
+    const wait = Math.max(50, apart - (Date.now() - (this.refreshedAt || 0)));
+    this.changeTimer = cx.timer.after(wait, cx => {
+      this.changeTimer = null;
+      if (this.loading) return;
+      const touched = this.touched;
+      this.touched = null;
+      if (!this.shown()) { this.stale = true; return; }
+      this.refresh(cx, false, touched === "all" ? null : touched);
     });
   }
 
@@ -532,13 +705,18 @@ export default class Files extends DocumentView {
     return this.context === context && key() === context.key;
   }
 
-  async loadFolder(path, context) {
-    const { on, cwd: root } = context;
-    const entries = await directory(path ? `${root}/${path}` : root, on);
-    if (!this.current(context) || (path && !this.folders.has(path))) return;
+  applyFolder(path, entries) {
     const used = [...this.entries.entries()].filter(([p]) => p !== path).reduce((n, [, e]) => n + e.length, 0);
     this.entries.set(path, entries.slice(0, Math.max(0, Math.min(PER_FOLDER, TOTAL - used))).sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name)));
     if (entries.length > PER_FOLDER || used + entries.length > TOTAL) this.limited = true;
+  }
+
+  async loadFolder(path, context) {
+    const { on, cwd: root } = context;
+    const [entries] = await listFolders([path ? `${root}/${path}` : root], on);
+    if (!this.current(context) || (path && !this.folders.has(path))) return;
+    if (!Array.isArray(entries)) throw entries || new Error("Cannot list this folder");
+    this.applyFolder(path, entries);
   }
 
   entryAt(path) {
@@ -548,20 +726,34 @@ export default class Files extends DocumentView {
   }
 
   requestRefresh(cx) {
+    this.quiet = 0;
     this.refresh(cx,true);
     cx.notify();
   }
 
-  refresh(cx, queueIfBusy = false) {
+  trustRepository(cx) {
+    if (!this.gitNote) return;
+    setShared(TRUSTED, [...(shared(TRUSTED) || []).filter(key => key !== this.gitNote).slice(-49), this.gitNote]);
+    this.requestRefresh(cx);
+  }
+
+  // Reads the tree again. `only` names the shown folders a watch reported; without it everything is read.
+  refresh(cx, queueIfBusy = false, only = null) {
     const { cwd, on } = location(), next = key();
     if (next !== this.context?.key) {
       this.clearFileDrag(cx);
       this.selected = null;
       if (this.context) this.saved.set(this.context.key, { folders: this.folders, file: this.file });
+      if (this.saved.size > 50) this.saved.delete(this.saved.keys().next().value);
       const saved = this.saved.get(next);
       this.context = { key: next, cwd, on }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
       this.pending = new Set(); this.marks = {}; this.show(null); this.watched = null; this.error = null; this.limited = false;
       this.loading = false; this.refreshAgain = false;
+      // The folder that was shown is no longer watched.
+      this.watching?.cancel?.(); this.watching = null;
+      this.changeTimer?.cancel?.(); this.changeTimer = null;
+      this.touched = null; this.quiet = 0; this.listed = null; this.gitNote = null;
+      only = null;
       if (saved?.file) this.show(saved.file, cx);
     }
     if (!cwd) return;
@@ -571,40 +763,65 @@ export default class Files extends DocumentView {
     }
     const context = this.context;
     this.loading = true;
-    this.limited = false;
+    if (!only) { this.limited = false; this.stale = false; }
     cx.spawn(async cx => {
       try {
-        for (const path of ["", ...this.folders]) {
-          if (!this.current(context)) return;
-          if (path && (!this.folders.has(path) || !this.entryAt(path)?.dir)) {
+        const wanted = only ? [...only].filter(path => path !== GIT_ONLY && (path === "" || this.folders.has(path))) : ["", ...this.folders];
+        // One program lists every folder that is read.
+        const listed = wanted.length ? await listFolders(wanted.map(path => path ? `${cwd}/${path}` : cwd), on) : [];
+        if (!this.current(context)) return;
+        wanted.forEach((path, i) => {
+          const entries = listed[i];
+          if (path && (!this.folders.has(path) || !this.entryAt(path)?.dir || entries === null)) {
             this.folders.delete(path);
             this.entries.delete(path);
-            continue;
+            return;
           }
-          await this.loadFolder(path, context);
+          if (!Array.isArray(entries)) throw entries || new Error("Cannot list this folder");
+          this.applyFolder(path, entries);
+        });
+        // An open folder is dropped once its parent's new listing no longer has it.
+        for (const folder of only ? [...this.folders] : []) {
+          const slash = folder.lastIndexOf("/"), parent = slash < 0 ? "" : folder.slice(0, slash);
+          if ((parent && !this.folders.has(parent)) || (wanted.includes(parent) && !this.entryAt(folder)?.dir)) {
+            this.folders.delete(folder);
+            this.entries.delete(folder);
+          }
         }
-        if (!this.current(context)) return;
         if (this.selected?.path && this.entryAt(this.selected.path)?.dir !== this.selected.dir) this.selected = null;
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(() => null);
         const marks = {};
+        let gitNote = null;
         if (top?.code === 0) {
-          // Writes nothing under .git (index lock, fsmonitor cookie): the folder watch would refresh again.
-          const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"], { cwd, on }).catch(() => null);
-          if (status?.code === 0) for (const entry of status.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) {
-            const xy = entry.slice(0, 2);
-            marks[`${top.stdout.trim()}/${entry.slice(3)}`] = xy === "??" || xy.includes("A") ? "A" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : "M";
+          const repository = `${on ?? ""}\n${top.stdout.trim()}`;
+          if (!(shared(TRUSTED) || []).includes(repository) && await repositoryRunsPrograms(cwd, on)) gitNote = repository;
+          else {
+            // Writes nothing under .git (index lock, fsmonitor cookie): the folder watch would refresh again.
+            // A submodule is compared by its commit only, so no status runs inside it under its own config.
+            const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--ignore-submodules=dirty"], { cwd, on }).catch(() => null);
+            if (status?.code === 0) for (const entry of status.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) {
+              const xy = entry.slice(0, 2);
+              marks[`${top.stdout.trim()}/${entry.slice(3)}`] = xy === "??" || xy.includes("A") ? "A" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : "M";
+            }
           }
         }
         if (!this.current(context)) return;
-        this.marks = marks; this.error = null; this.watch(cwd, cx);
+        this.marks = marks; this.gitNote = gitNote; this.error = null; this.watch(cwd, cx);
+        if (on && !only) {
+          // Another machine reports no changes: read less often while its listing stays the same.
+          const now = JSON.stringify([[...this.entries], marks]);
+          this.quiet = now === this.listed ? (this.quiet || 0) + 1 : 0;
+          this.listed = now;
+        }
       } catch (e) { if (this.current(context)) this.error = String(e); }
       finally {
         if (this.context === context) {
           this.loading = false;
+          this.refreshedAt = Date.now();
           if (this.refreshAgain) {
             this.refreshAgain = false;
             this.refresh(cx);
-          }
+          } else this.scheduleChanges(cx);
         }
         cx.notify();
       }
@@ -710,7 +927,7 @@ export default class Files extends DocumentView {
       }
       const newChange = changeId !== this.changed;
       this.changed=changeId; this.refresh(cx,newChange);
-    }
+    } else if (!checking() && this.stale && !this.loading && this.shown()) this.refresh(cx);
     const t = theme();
     this.openPane = focused()?.pane ?? this.openPane;
     const root=this.root,on=this.on,file=this.file;
@@ -763,7 +980,10 @@ export default class Files extends DocumentView {
         .on_drop((event,cx)=>{cx.stop_propagation();if(root)this.upload(event.paths,root,on);})
         .children(this.rows("", 0, [], t))
         .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
-        .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))))
+        .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))
+        .when(Boolean(this.gitNote), el => el.child(div().id("git-marks-off").p(8).text_size(11).text_color(t.dim).cursor_pointer()
+          .tooltip("Git would run programs named in this repository's own config to compare files. Click if you trust this repository.")
+          .on_click((_e, cx) => this.trustRepository(cx)).child("Git marks are off: this repository's config runs its own programs · Trust it")))))
       .when(Boolean(this.file), el => el.child(this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(12).text_color(t.dim).child(this.fileError || "Loading file…")))
       .when(this.documentPress?.pointer,el=>el.child(this.fileDragLabel(this.documentPress,t)));
   }

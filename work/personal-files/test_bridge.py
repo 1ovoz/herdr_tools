@@ -30,7 +30,7 @@ class Transfers(unittest.TestCase):
         client=bridge.RemoteClient(None,'unused')
         request=client.request
         def limited(action,**fields):
-            if action=='write' and len(fields['data'])>bridge.LEGACY_CHUNK*4//3:
+            if action in ('write','write_at') and len(fields['data'])>bridge.LEGACY_CHUNK*4//3:
                 request(action,**fields)  # Lost acknowledgement after writing the temporary file.
                 raise bridge.Failure('connection','fixture limit')
             if action=='read' and fields['length']>bridge.LEGACY_CHUNK:
@@ -289,8 +289,345 @@ class Transfers(unittest.TestCase):
                 stage=Path(args['path']);stage.unlink();stage.write_bytes(b'')
             return real(action,**args)
         self.client.request=changed
-        with self.assertRaises(bridge.Failure):bridge.upload(self.client,str(source),str(self.remote))
+        with patch.object(bridge,'CHUNK_STEPS',((bridge.CHUNK,1),)):
+            with self.assertRaises(bridge.Failure):bridge.upload(self.client,str(source),str(self.remote))
         self.assertFalse((self.remote/source.name).exists())
+
+    def small_chunks(self):
+        return patch.object(bridge,'CHUNK_STEPS',((64*1024,4),(16*1024,1)))
+
+    def test_side_by_side_chunks_keep_their_order(self):
+        payload=os.urandom(64*1024*9+123)
+        source=self.local/'ordered.bin';source.write_bytes(payload)
+        seen=[]
+        real=self.client.request
+        def recorded(action,**args):
+            seen.append(action)
+            return real(action,**args)
+        self.client.request=recorded
+        with self.small_chunks():
+            bridge.upload(self.client,str(source),str(self.remote))
+            result=bridge.download(self.client,str(self.remote/source.name),str(self.downloads))
+        self.assertEqual((self.remote/source.name).read_bytes(),payload)
+        self.assertEqual(Path(result['path']).read_bytes(),payload)
+        self.assertEqual(seen.count('write_at'),10)
+        self.assertEqual(seen.count('read'),10)
+        self.assertNotIn('write',seen)
+
+    def test_stage_swapped_between_chunks_publishes_nothing(self):
+        source=self.local/'swap.bin';source.write_bytes(os.urandom(64*1024*3))
+        real=self.client.request
+        calls=[]
+        def swapped(action,**args):
+            if action=='write_at':
+                calls.append(args['offset'])
+                if len(calls)==3:
+                    stage=Path(args['path']);stage.unlink();stage.write_bytes(b'')
+            return real(action,**args)
+        self.client.request=swapped
+        with patch.object(bridge,'CHUNK_STEPS',((64*1024,2),)):
+            with self.assertRaises(bridge.Failure):bridge.upload(self.client,str(source),str(self.remote))
+        self.assertFalse((self.remote/source.name).exists())
+        self.assertFalse(list(self.remote.glob('*.part')))
+
+    def test_linked_stage_is_not_written(self):
+        source=self.local/'linked.bin';source.write_bytes(b'private upload')
+        victim=self.remote/'victim.txt';victim.write_bytes(b'keep')
+        real=self.client.request
+        def linked(action,**args):
+            if action=='write_at':
+                stage=Path(args['path']);stage.unlink();os.link(victim,stage)
+            return real(action,**args)
+        self.client.request=linked
+        with self.assertRaises(bridge.Failure):bridge.upload(self.client,str(source),str(self.remote))
+        self.assertEqual(victim.read_bytes(),b'keep')
+        self.assertFalse((self.remote/source.name).exists())
+
+    @unittest.skipIf(os.name=='nt','POSIX file modes')
+    def test_upload_publishes_with_the_expected_mode(self):
+        mask=os.umask(0o022)
+        try:
+            source=self.local/'run.sh';source.write_bytes(b'#!/bin/sh\necho v2\n')
+            fresh=self.local/'fresh.txt';fresh.write_bytes(b'data')
+            target=self.remote/source.name;target.write_bytes(b'#!/bin/sh\necho v1\n');target.chmod(0o755)
+            for send in (lambda path,**o:bridge.upload(self.client,str(path),str(self.remote),**o),
+                         lambda path,**o:bridge.local_upload(str(path),str(self.remote),**o)):
+                target.chmod(0o755);(self.remote/fresh.name).unlink(missing_ok=True)
+                send(source,overwrite=True);send(fresh)
+                self.assertEqual(target.stat().st_mode&0o777,0o755,'Replacing a file keeps its mode')
+                self.assertEqual((self.remote/fresh.name).stat().st_mode&0o777,0o644,'A new file gets the account default')
+        finally:os.umask(mask)
+
+    class Stops(bridge.Control):
+        """Ends a run after a number of chunks, as the time limit would."""
+        def __init__(self,chunks):
+            super().__init__();self.chunks=chunks
+        def due(self):
+            self.chunks-=1
+            return self.chunks<0
+
+    def test_upload_continues_across_runs(self):
+        payload=os.urandom(64*1024*7+5)
+        source=self.local/'long.bin';source.write_bytes(payload)
+        marks=[]
+        with self.small_chunks():
+            first=bridge.upload(self.client,str(source),str(self.remote),control=self.Stops(3),progress=lambda done,total:marks.append(done))
+            self.assertTrue(first['partial'])
+            self.assertEqual(first['resume']['offset'],64*1024*3)
+            self.assertFalse((self.remote/source.name).exists())
+            second=bridge.upload(self.client,str(source),str(self.remote),control=self.Stops(2),resume=first['resume'])
+            self.assertEqual(second['resume']['offset'],64*1024*5)
+            done=bridge.upload(self.client,str(source),str(self.remote),resume=second['resume'])
+        self.assertEqual((self.remote/source.name).read_bytes(),payload)
+        self.assertEqual(done['size'],len(payload))
+        self.assertEqual(marks,sorted(marks))
+        self.assertFalse(list(self.remote.glob('*.part')))
+
+    def test_verification_waits_for_a_run_with_time_left(self):
+        payload=os.urandom(64*1024*3)
+        source=self.local/'late.bin';source.write_bytes(payload)
+        remote=self.remote/'late-down.bin';remote.write_bytes(payload)
+        def late():
+            control=bridge.Control(None,3600);control.started-=bridge.FINISH_WITHIN_SECONDS+1
+            return control
+        seen=[]
+        real=self.client.request
+        def recorded(action,**args):
+            seen.append(action)
+            return real(action,**args)
+        self.client.request=recorded
+        with self.small_chunks():
+            first=bridge.upload(self.client,str(source),str(self.remote),control=late())
+            self.assertEqual((first['partial'],first['resume']['offset']),(True,len(payload)))
+            self.assertNotIn('finish',seen)
+            del seen[:]
+            bridge.upload(self.client,str(source),str(self.remote),control=bridge.Control(None,3600),resume=first['resume'])
+            self.assertEqual(seen,['finish'],'The next run only verifies and publishes')
+            first=bridge.download(self.client,str(remote),str(self.downloads),control=late())
+            self.assertEqual((first['partial'],first['resume']['offset']),(True,len(payload)))
+            done=bridge.download(self.client,str(remote),str(self.downloads),control=bridge.Control(None,3600),resume=first['resume'])
+        self.assertEqual((self.remote/source.name).read_bytes(),payload)
+        self.assertEqual(Path(done['path']).read_bytes(),payload)
+
+    def test_upload_does_not_continue_a_changed_source(self):
+        source=self.local/'edited.bin';source.write_bytes(os.urandom(64*1024*4))
+        with self.small_chunks():
+            first=bridge.upload(self.client,str(source),str(self.remote),control=self.Stops(2))
+            source.write_bytes(os.urandom(64*1024*4+1))
+            with self.assertRaises(bridge.Failure) as caught:
+                bridge.upload(self.client,str(source),str(self.remote),resume=first['resume'])
+        self.assertEqual(caught.exception.code,'changed')
+        self.assertEqual(list(self.remote.iterdir()),[])
+
+    def test_download_continues_across_runs_and_verifies(self):
+        payload=os.urandom(64*1024*6+77)
+        source=self.remote/'long.bin';source.write_bytes(payload)
+        with self.small_chunks(), patch.object(bridge,'HASH_LIMIT',1024):
+            first=bridge.download(self.client,str(source),str(self.downloads),control=self.Stops(4))
+            self.assertTrue(first['partial'])
+            self.assertNotIn('sha256',first['resume']['info'],'Large files are hashed once, at the end')
+            self.assertFalse((self.downloads/source.name).exists())
+            # A corrupted staging file must not be published.
+            part=Path(first['resume']['part'])
+            done=bridge.download(self.client,str(source),str(self.downloads),resume=first['resume'])
+            self.assertEqual(Path(done['path']).read_bytes(),payload)
+            again=bridge.download(self.client,str(source),str(self.downloads),overwrite=True,control=self.Stops(4))
+            part=Path(again['resume']['part'])
+            data=bytearray(part.read_bytes());data[10]^=0xff;part.write_bytes(bytes(data))
+            with self.assertRaises(bridge.Failure) as caught:
+                bridge.download(self.client,str(source),str(self.downloads),overwrite=True,resume=again['resume'])
+            self.assertEqual(caught.exception.code,'hash')
+        self.assertEqual((self.downloads/source.name).read_bytes(),payload)
+        self.assertFalse(list(self.downloads.glob('*.part')))
+
+    def test_interrupted_transfer_offers_to_continue(self):
+        payload=os.urandom(64*1024*8)
+        source=self.remote/'flaky.bin';source.write_bytes(payload)
+        upload_source=self.local/'flaky-up.bin';upload_source.write_bytes(payload)
+        real=self.client.request
+        state={'fail':6}
+        def flaky(action,**args):
+            if action in ('read','write_at'):
+                state['fail']-=1
+                if state['fail']<=0:raise bridge.Failure('connection','link dropped')
+            return real(action,**args)
+        self.client.request=flaky
+        with self.small_chunks():
+            with self.assertRaises(bridge.Failure) as caught:
+                bridge.download(self.client,str(source),str(self.downloads))
+            resume=caught.exception.resume
+            self.assertGreater(resume['offset'],0)
+            state['fail']=10**6
+            done=bridge.download(self.client,str(source),str(self.downloads),resume=resume)
+            self.assertEqual(Path(done['path']).read_bytes(),payload)
+            state['fail']=6
+            with self.assertRaises(bridge.Failure) as caught:
+                bridge.upload(self.client,str(upload_source),str(self.remote))
+            resume=caught.exception.resume
+            self.assertGreater(resume['offset'],0)
+            state['fail']=10**6
+            bridge.upload(self.client,str(upload_source),str(self.remote),resume=resume)
+        self.assertEqual((self.remote/upload_source.name).read_bytes(),payload)
+        self.assertFalse(list(self.remote.glob('*.part'))+list(self.downloads.glob('*.part')))
+
+    def test_retry_while_the_link_is_still_down_keeps_what_arrived(self):
+        payload=os.urandom(64*1024*6)
+        source=self.remote/'down.bin';source.write_bytes(payload)
+        upload_source=self.local/'down-up.bin';upload_source.write_bytes(payload)
+        real=self.client.request
+        link={'up':True}
+        def gated(action,**args):
+            if action in ('read','write_at','write') and not link['up']:raise bridge.Failure('connection','link down')
+            return real(action,**args)
+        self.client.request=gated
+        with self.small_chunks():
+            first=bridge.download(self.client,str(source),str(self.downloads),control=self.Stops(4))
+            started=bridge.upload(self.client,str(upload_source),str(self.remote),control=self.Stops(3))
+            link['up']=False
+            with self.assertRaises(bridge.Failure) as caught:
+                bridge.download(self.client,str(source),str(self.downloads),resume=first['resume'])
+            again=caught.exception.resume
+            self.assertEqual((again['offset'],again['step']),(first['resume']['offset'],0),'A later retry uses the proven chunk size')
+            with self.assertRaises(bridge.Failure) as caught:
+                bridge.upload(self.client,str(upload_source),str(self.remote),resume=started['resume'])
+            later=caught.exception.resume
+            self.assertEqual(later['offset'],started['resume']['offset'])
+            self.assertTrue(Path(later['part']).exists())
+            link['up']=True
+            done=bridge.download(self.client,str(source),str(self.downloads),resume=again)
+            bridge.upload(self.client,str(upload_source),str(self.remote),resume=later)
+        self.assertEqual(Path(done['path']).read_bytes(),payload)
+        self.assertEqual((self.remote/upload_source.name).read_bytes(),payload)
+
+    def test_cancel_request_stops_and_cleans_up(self):
+        source=self.local/'stop.bin';source.write_bytes(os.urandom(64*1024*6))
+        remote=self.remote/'stop-down.bin';remote.write_bytes(os.urandom(64*1024*6))
+        marker=self.root/'cancel'
+        def stop_after_two(done,total):
+            if done>=64*1024*2:marker.touch()
+        for run in (lambda:bridge.upload(self.client,str(source),str(self.remote),control=bridge.Control(marker),progress=stop_after_two),
+                    lambda:bridge.download(self.client,str(remote),str(self.downloads),control=bridge.Control(marker),progress=stop_after_two),
+                    lambda:bridge.local_upload(str(source),str(self.remote),control=bridge.Control(marker),progress=stop_after_two)):
+            marker.unlink(missing_ok=True)
+            with self.small_chunks(), patch.object(bridge,'CHUNK',64*1024):
+                with self.assertRaises(bridge.Failure) as caught:run()
+            self.assertEqual(caught.exception.code,'cancelled')
+            self.assertEqual(sorted(p.name for p in self.remote.iterdir()),['stop-down.bin'])
+            self.assertEqual(list(self.downloads.iterdir()),[])
+
+    def test_discard_removes_only_staging_files(self):
+        source=self.local/'drop.bin';source.write_bytes(os.urandom(64*1024*4))
+        with self.small_chunks():
+            first=bridge.upload(self.client,str(source),str(self.remote),control=self.Stops(2))
+        part=Path(first['resume']['part'])
+        self.assertTrue(part.exists())
+        keep=self.remote/'keep.txt';keep.write_bytes(b'keep')
+        bridge.discard(self.client,{'kind':'copy','part':str(keep),'offset':0})
+        self.assertTrue(keep.exists())
+        bridge.discard(self.client,first['resume'])
+        self.assertFalse(part.exists())
+
+    def test_same_computer_copy_matches_the_transfer_rules(self):
+        payload=os.urandom(bridge.CHUNK+99)
+        source=self.local/"로컬 ' $().bin";source.write_bytes(payload)
+        result=bridge.local_upload(str(source),str(self.remote))
+        target=self.remote/source.name
+        self.assertEqual((Path(result['path']),target.read_bytes()),(target,payload))
+        self.assertEqual(result['sha256'],hashlib.sha256(payload).hexdigest())
+        with self.assertRaises(bridge.Failure) as caught:bridge.local_upload(str(source),str(self.remote))
+        self.assertEqual(caught.exception.code,'exists')
+        with self.assertRaises(bridge.Failure) as caught:bridge.local_upload(str(self.local),str(self.remote))
+        self.assertEqual(caught.exception.code,'folder')
+        with self.assertRaises(bridge.Failure):bridge.local_upload(str(source),str(self.remote/'missing'))
+        saved=bridge.local_download(str(target),str(self.downloads),filename='other.bin')
+        self.assertEqual(Path(saved['path']).read_bytes(),payload)
+        self.assertTrue(saved['zone_marked'])
+        with self.assertRaises(bridge.Failure) as caught:bridge.local_download(str(target),str(self.downloads),filename='other.bin')
+        self.assertEqual(caught.exception.code,'exists')
+        with patch.object(bridge,'CHUNK',64*1024):
+            first=bridge.local_download(str(target),str(self.downloads),filename='resumed.bin',control=self.Stops(5))
+            self.assertTrue(first['partial'])
+            done=bridge.local_download(str(target),str(self.downloads),filename='resumed.bin',resume=first['resume'])
+        self.assertEqual(Path(done['path']).read_bytes(),payload)
+        self.assertEqual(done['sha256'],hashlib.sha256(payload).hexdigest())
+        self.assertFalse(list(self.remote.glob('*.part'))+list(self.downloads.glob('*.part')))
+
+    def test_stale_staging_files_are_removed_and_fresh_ones_kept(self):
+        old=self.remote/'.herdr-upload-old.part';old.write_bytes(b'left behind');os.utime(old,(1,1))
+        fresh=self.remote/'.herdr-upload-new.part';fresh.write_bytes(b'in progress')
+        mine=self.remote/'notes.part';mine.write_bytes(b'user file');os.utime(mine,(1,1))
+        source=self.local/'next.bin';source.write_bytes(b'next')
+        bridge.upload(self.client,str(source),str(self.remote))
+        self.assertEqual(sorted(p.name for p in self.remote.iterdir()),['.herdr-upload-new.part','next.bin','notes.part'])
+        cache=self.root/'cache';cache.mkdir()
+        dead=cache/'page.png.0123.part';dead.write_bytes(b'x');os.utime(dead,(1,1))
+        live=cache/'page.png.4567.part';live.write_bytes(b'x')
+        bridge.prune_cache(cache,r'\d+\.png',10,cache/'none.png')
+        self.assertEqual([p.name for p in cache.glob('*.part')],[live.name])
+
+    def test_change_poll_answers_without_the_full_helper(self):
+        source=self.local/'poll.pdf';source.write_bytes(b'12345')
+        argv=lambda **q:['bridge.py','--hc','unused','--home',str(self.root),'--request',json.dumps(q)]
+        quick=json.loads(bridge.quick_revision(argv(action='revision',source=str(source),job='c'*32)))
+        self.assertEqual(quick,self.in_process(action='revision',source=str(source),job='c'*32))
+        self.assertEqual(quick,self.file_action('revision',source))
+        self.assertEqual(quick['revision'][0],'5')
+        for request in (dict(action='revision',source=str(source),job='c'*32,on='lab'),
+                        dict(action='revision',source=str(source),job='../x'),
+                        dict(action='revision',source=str(self.local/'missing.pdf'),job='c'*32),
+                        dict(action='text',source=str(source),job='c'*32)):
+            self.assertIsNone(bridge.quick_revision(argv(**request)))
+        self.assertIsNone(bridge.quick_revision(['bridge.py','--request']))
+
+    def in_process(self, **request):
+        out=io.StringIO()
+        argv=[bridge.__file__,'--hc','unused','--home',str(self.root),'--request',json.dumps(request)]
+        with patch.object(sys,'argv',argv), redirect_stdout(out):
+            bridge.main()
+        return json.loads(out.getvalue())
+
+    def test_open_folder_accepts_only_folders(self):
+        with patch.object(os,'startfile',create=True) as launch:
+            program=self.local/'tool.exe';program.write_bytes(b'MZ')
+            with self.assertRaises(bridge.Failure) as caught:
+                self.in_process(action='folder',directory=str(program),job='d'*32)
+            self.assertEqual(caught.exception.code,'folder')
+            launch.assert_not_called()
+            self.assertTrue(self.in_process(action='folder',directory=str(self.local),job='d'*32)['ok'])
+            launch.assert_called_once_with(str(self.local))
+
+    def test_long_transfer_keeps_its_progress_between_runs(self):
+        payload=os.urandom(64*1024*5)
+        source=self.local/'sliced.bin';source.write_bytes(payload)
+        job='e'*32
+        progress=self.root/'data'/'personal-files'/'jobs'/f'{job}.json'
+        request=dict(action='upload',source=str(source),directory=str(self.remote),job=job)
+        class Short(bridge.Control):
+            def __init__(self,cancel_file,seconds):
+                super().__init__(cancel_file);self.chunks=2
+            def due(self):
+                self.chunks-=1
+                return self.chunks<0
+        with patch.object(bridge,'CHUNK',64*1024), patch.object(bridge,'Control',Short):
+            first=self.in_process(**request)
+            self.assertTrue(first['partial'])
+            self.assertEqual(json.loads(progress.read_text()),{'done':64*1024*2,'total':len(payload)})
+            second=self.in_process(**request,resume=first['resume'])
+            self.assertTrue(second['partial'])
+            progress.with_suffix('.cancel').touch()
+            with self.assertRaises(bridge.Failure) as caught:
+                self.in_process(**request,resume=second['resume'])
+            self.assertEqual(caught.exception.code,'cancelled')
+            self.assertEqual(list(progress.parent.iterdir()),[],'A finished run removes its progress and cancel request')
+            self.assertEqual(list(self.remote.iterdir()),[])
+            first=self.in_process(**request)
+            self.assertTrue(self.in_process(action='discard',job=job,resume=first['resume'])['ok'])
+            self.assertEqual(list(self.remote.iterdir()),[])
+            first=self.in_process(**request)
+            done=first
+            while done.get('partial'):done=self.in_process(**request,resume=done['resume'])
+        self.assertEqual(Path(done['path']).read_bytes(),payload)
+        self.assertFalse(progress.exists())
     def test_unsafe_windows_leaf_rejected(self):
         for name in ['CON.pdf','..','a:b.pdf','x\\y.pdf','trailing.']:
             with self.assertRaises(bridge.Failure): bridge.safe_leaf(name)

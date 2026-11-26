@@ -43,6 +43,8 @@ try:
         uploaded=request('upload',on=args.machine,source=str(fixture),directory=folder,job=job)
     progress.unlink(missing_ok=True)
     remote=folder+'/fixture.pdf'
+    mode,default=remote_exec('import os,sys; mask=os.umask(0); print(os.stat(sys.argv[1]).st_mode&0o777, 0o666&~mask)',remote).split()
+    assert mode==default,f'An uploaded file takes the account default mode: {mode} != {default}'
     first=request('preview',on=args.machine,source=remote,page=0,width=900,sizes=True)
     assert first['pages']==2 and (home/first['image']).is_file()
     assert len(first['sizes'])==2

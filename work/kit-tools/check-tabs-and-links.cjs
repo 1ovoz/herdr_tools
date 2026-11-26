@@ -18,8 +18,9 @@ let documentPane = { pane: 'p2', tab: 't1', mod: 'herdr-kit-pdf' };
 let panes = [before, documentPane];
 const fakeSpace = { id: 's1', active: true, tabs: [{ id:'t1', name:'Work', active: true }] };
 const sandbox = {
-  exec: async (_program, _args, options) => {
+  exec: async (_program, args, options) => {
     assert.equal(options.on, 'lab');
+    assert.ok(args.indexOf('-I') >= 0 && args.indexOf('-I') < args.indexOf('-c'), 'The resolver takes no modules from the home folder');
     return { code: 0, stdout: '"/tmp/check.pdf"' };
   },
   layout: () => ({ children: [{ id:'files', content:{ props:{ transfer:true } } }] }),

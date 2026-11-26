@@ -4,11 +4,23 @@ Windows용 Herdr에서 파일을 옮기고 PDF와 코드를 나란히 읽으며 
 
 ## Windows 설치 및 업데이트
 
-[Windows x64 설치 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Windows-x64-v1.6.0.zip) · [개발 인계 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Dev-v1.6.0.zip) · [SHA-256](outputs/SHA256SUMS)
+[Windows x64 설치 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Windows-x64-v1.7.0.zip) · [개발 인계 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Dev-v1.7.0.zip) · [SHA-256](outputs/SHA256SUMS)
 
-Herdr 데스크톱 0.1.17과 Windows x64 Python 3.10 이상이 있는 PC에서 새 ZIP을 별도 폴더에 모두 풀고 `Herdr-Mod-Kit/Install-Windows.cmd`를 실행하세요. v1.4.0 또는 v1.5.0이 설치된 PC에서도 같은 순서로 업데이트할 수 있습니다. 설치 후 하단바 오른쪽에 `mod 1.6.0`이 표시됩니다. 업그레이드는 기존 기능 선택, 사용량 머신 및 키 설정을 보존합니다. 새 설치의 사용량 기본값은 `local`입니다. 설치 후 `Diagnose-Windows.cmd`로 확인할 수 있습니다.
+v1.7.0은 리눅스에서 빌드하고 테스트했으며, Windows의 Herdr 앱에서는 아직 확인하지 않았습니다. Windows에서 확인된 판은 [v1.6.0](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Windows-x64-v1.6.0.zip)입니다.
+
+Herdr 데스크톱 0.1.17과 Windows x64 Python 3.10 이상이 있는 PC에서 새 ZIP을 별도 폴더에 모두 풀고 `Herdr-Mod-Kit/Install-Windows.cmd`를 실행하세요. v1.4.0 이후 판이 설치된 PC에서도 같은 순서로 업데이트할 수 있습니다. 설치 후 하단바 오른쪽에 `mod 1.7.0`이 표시됩니다. 업그레이드는 기존 기능 선택, 사용량 머신 및 키 설정을 보존합니다. 새 설치의 사용량 기본값은 `local`입니다. 설치 후 `Diagnose-Windows.cmd`로 확인할 수 있습니다.
 
 직접 편집한 설치 파일과 새 파일이 충돌하면 설치기가 해당 경로를 표시하고 중단합니다. 수정본을 별도 위치에 보관하고 해당 경로를 비운 뒤 다시 실행하세요. 실행 중인 앱이 변경할 파일을 계속 잠그면 Herdr를 닫고 재실행하세요. SSH 머신 등록과 Windows의 기존 `main` 레이아웃은 이 설치기의 관리 대상 밖에 있습니다.
+
+## v1.7.0에서 달라진 점
+
+- 파일 전송이 빨라졌습니다. 큰 파일은 나눠서 이어 보내며, 작업 창의 **Cancel**로 멈추고 연결이 끊긴 뒤 **Retry**로 끊긴 곳부터 이어 갑니다.
+- PDF는 필요한 페이지를 한 번에 그리고 다음 쪽을 미리 읽습니다. 지나간 쪽으로 돌아갈 때 다시 그리지 않습니다.
+- Files는 바뀐 폴더만 다시 읽습니다.
+- 저장소 자체 설정에 filter 프로그램이 지정된 폴더에서는 Git 표시 대신 안내 줄이 나옵니다. 신뢰하는 저장소라면 그 줄을 눌러 표시를 켜세요.
+- 서버에 올린 파일은 그 계정의 기본 권한을 받고, 덮어쓴 파일은 기존 권한을 유지합니다.
+
+전체 목록과 측정값은 [v1.7.0에 적용한 변경](docs/changes-v1.7.0.md)에 있습니다.
 
 ## 소스에서 설치
 

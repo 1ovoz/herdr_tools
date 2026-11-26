@@ -44,7 +44,8 @@ export async function handleLink({link, source}) {
     const spelling = remoteSpelling(link.raw, source.machine);
     if (!spelling || spelling.includes("\0")) return "pass";
     try {
-      const result = await exec("python3", ["-c", RESOLVE_REMOTE, spelling, source.cwd || ""],
+      // -I: the machine's home folder is the working directory and must not supply modules.
+      const result = await exec("python3", ["-I", "-c", RESOLVE_REMOTE, spelling, source.cwd || ""],
         { on: source.machine, timeout: 9000 });
       path = result.code === 0 && result.stdout.trim() ? JSON.parse(result.stdout) : null;
     } catch { path = null; }
