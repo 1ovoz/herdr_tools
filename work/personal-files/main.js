@@ -606,10 +606,15 @@ export default class Files extends DocumentView {
     });
   }
 
-  work(cx, overwrite = false) {
+  work(cx, choice) {
     if (this.busy || this.index >= this.queue.length) return;
-    if (overwrite) this.queue[this.index].overwrite = true;
+    if (choice) {
+      this.queue[this.index].overwrite = choice === "replace";
+      this.queue[this.index].keep_both = choice === "keep-both";
+    }
+    const retry = Boolean(this.error);
     this.busy = true; this.error = null; this.collision = false; this.cancelling = false;
+    if (retry) cx.notify();
     cx.spawn(async cx => {
       try {
         while (this.index < this.queue.length) {
@@ -626,24 +631,27 @@ export default class Files extends DocumentView {
           }
           // A failure that can continue says where; any other clears it so a retry starts over.
           this.queue[this.index].resume = value.ok ? undefined : value.resume;
-          if (value.code === "cancelled") {
+          if (value.code === "cancelled" || value.cancelled) {
             this.result = {cancelled:true};
             this.index = this.queue.length;
+            if (this.cancelling && request.action !== "upload" && props()?.overlay) closeOverlay(props().overlay);
             return;
           }
           if (!value.ok) {
             this.error = value.error;
             this.collision = value.code === "exists" && (request.action === "upload" ||
-              (request.action === "download" && !request.choose) || (request.action === "download-zip" && Boolean(value.resume)));
+              (["download","download-zip"].includes(request.action) && Boolean(value.resume)));
+            if (this.collision && request.action !== "upload") {
+              const saved = typeof value.resume === "string" ? JSON.parse(value.resume) : value.resume;
+              this.existingName = saved.filename || "This file";
+            }
             return;
           }
           this.result = value;
           this.index++;
-          if (!value.cancelled) {
-            if (cutId && shared(CLIPBOARD)?.id === cutId) setShared(CLIPBOARD,null);
-            setShared("personal-files.changed", request.action === "move"
-              ? {id:request.job,source:request.source,on:request.on} : jobId());
-          }
+          if (cutId && shared(CLIPBOARD)?.id === cutId) setShared(CLIPBOARD,null);
+          setShared("personal-files.changed", request.action === "move"
+            ? {id:request.job,source:request.source,on:request.on} : jobId());
           cx.notify();
         }
       } catch (e) { this.error = String(e); }
@@ -688,28 +696,33 @@ export default class Files extends DocumentView {
       ({copy:"Copy file",move:"Move file",folder:"Open Downloads folder","download-zip":"Download folder as ZIP"})[current?.action] || "Download";
     const cancelled = done && this.result?.cancelled;
     const progress=this.progress;
+    const askReplace = this.collision && current?.action !== "upload";
     let status = "Ready";
-    if (this.error) status = this.error;
+    if (askReplace) status = "Keep both saves a numbered copy in the same folder.";
+    else if (this.error) status = this.error;
     else if (this.cancelling) status = "Cancelling…";
     else if (this.busy) {
       if (progress?.phase === "archive") status = "Creating ZIP… · " + (progress.done/1048576).toFixed(1) + " MiB";
       else if (progress) {
         const percent = Math.round(progress.done/Math.max(1,progress.total)*100);
         status = percent + "% · " + (progress.done/1048576).toFixed(1) + " / " + (progress.total/1048576).toFixed(1) + " MiB";
-      } else status = current?.action === "download-zip" && !current.resume ? "Choose where to save the ZIP…" : "Connecting…";
+      } else status = current?.choose && !current.resume ? "Choose where to save the download…" : "Connecting…";
     } else if (cancelled) status = "";
     else if (done) status = this.result?.message || this.index + " operation(s) completed";
     const body = v_flex()
-      .child(div().flex_none().text_color(t.muted).truncate().child(current?.source || this.result?.path || ""))
-      .child(div().flex_none().text_color(this.error?t.blocked:t.muted).child(status))
+      .child(div().flex_none().text_color(t.muted).truncate()
+        .tooltip(askReplace ? this.error : current?.source || this.result?.path || "")
+        .child(askReplace ? this.existingName : current?.source || this.result?.path || ""))
+      .child(div().flex_none().text_color(this.error && !askReplace?t.blocked:t.muted).child(status))
       .when(current?.action==="upload",el=>el.child(div().flex_none().text_color(t.dim).truncate().child(`Folder: ${current.directory}`)));
     const stoppable = this.busy && ["upload","download","download-zip"].includes(current?.action);
     const actions = h_flex()
-      .child(this.dialogButton("close-job",this.busy ? "Working…" : "Close",cx=>this.closeJob(cx)))
+      .child(this.dialogButton("close-job",this.busy ? "Working…" : askReplace ? "Cancel" : "Close",cx=>this.closeJob(cx)))
       .when(stoppable, el=>el.child(this.dialogButton("cancel-job","Cancel",cx=>this.cancelJob(cx),"danger",this.cancelling)))
-      .when(this.collision, el=>el.child(this.dialogButton("replace-file","Replace file",cx=>this.work(cx,true),"danger")))
+      .when(askReplace, el=>el.child(this.dialogButton("keep-both","No, keep both",cx=>this.work(cx,"keep-both"))))
+      .when(this.collision, el=>el.child(this.dialogButton("replace-file",askReplace ? "Yes, replace" : "Replace file",cx=>this.work(cx,"replace"),"danger")))
       .when(Boolean(this.error) && !this.collision, el=>el.child(this.dialogButton("retry-file","Retry",cx=>this.work(cx),"primary")));
-    return this.renderDialog(JOB_DIALOG_HEIGHT, cancelled ? "Cancelled" : done ? "Completed" : title, body, actions);
+    return this.renderDialog(JOB_DIALOG_HEIGHT, cancelled ? "Cancelled" : done ? "Completed" : askReplace ? "Replace existing file?" : title, body, actions);
   }
 
   watch(root, cx) {

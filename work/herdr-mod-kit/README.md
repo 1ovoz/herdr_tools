@@ -1,6 +1,6 @@
-# Herdr Mod Kit · Windows x64 v1.9.0
+# Herdr Mod Kit · Windows x64 v1.9.1
 
-Windows x64용 Herdr 데스크톱 모드입니다. 사용량 표시, 파일 전송, PDF 뷰어, 탭 관리를 함께 설치하거나 골라서 사용할 수 있습니다. 배포 파일명은 v1.9.0이며, 기존 설치를 구분하는 내부 버전은 1.9.0입니다.
+Windows x64용 Herdr 데스크톱 모드입니다. 사용량 표시, 파일 전송, PDF 뷰어, 탭 관리를 함께 설치하거나 골라서 사용할 수 있습니다. 배포 파일명은 v1.9.1이며, 기존 설치를 구분하는 내부 버전은 1.9.1입니다.
 
 ## 새 Windows PC에 설치하기
 
@@ -14,9 +14,11 @@ py -3 -X utf8 .\kit.py install --usage-machine my-server --activate
 
 `py`가 없는 PC에서는 `python`을 사용합니다. Windows에 Codex·Claude Code를 직접 로그인해 사용하는 경우 `--usage-machine local`을 지정할 수 있습니다. 원격 조회는 해당 머신의 `python3` 및 두 CLI의 구독 로그인 파일이 필요합니다. Fable은 계정에서 별도 한도를 제공하는 경우에 표시됩니다. 로그인 파일이나 원격 연결 정보는 ZIP에 들어 있지 않습니다.
 
-업데이트가 적용되면 하단바 오른쪽에 `mod 1.9.0`이 보입니다. 사용량 막대를 눌러 **Sources**를 열고, Codex와 Claude Code가 읽을 머신을 각각 고르세요. 예를 들어 Codex는 **local**, Claude Code는 기존 Herdr 머신 **lab**을 선택할 수 있습니다. **Install default**는 설치 당시 공통 대상을 사용합니다.
+업데이트가 적용되면 하단바 오른쪽에 `mod 1.9.1`이 보입니다. 사용량 막대를 눌러 **Sources**를 열고, Codex와 Claude Code가 읽을 머신을 각각 고르세요. 예를 들어 Codex는 **local**, Claude Code는 기존 Herdr 머신 **lab**을 선택할 수 있습니다. **Install default**는 설치 당시 공통 대상을 사용합니다.
 
 ## 기능
+
+파일 또는 폴더 ZIP의 저장 위치에 같은 이름이 있으면 **Yes, replace**로 덮어쓰거나 **No, keep both**로 `보고서 (1).pdf`처럼 번호를 붙여 저장합니다. 번호가 사용 중이면 다음 번호를 씁니다. Windows 저장 위치 창이 열려 있어도 Herdr의 **Cancel**을 누르면 창이 닫히고 다운로드가 취소됩니다.
 
 Files 제목 아래 왼쪽 아이콘은 차례로 새 파일, 새 폴더, 새로고침입니다. 오른쪽에는 선택한 항목 이름이 보입니다. 새 항목은 선택한 폴더 안에 생성되며, 파일을 선택하면 같은 폴더에 생성됩니다.
 

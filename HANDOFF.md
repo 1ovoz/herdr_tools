@@ -1,6 +1,30 @@
-# Herdr 플러그인 개발 인계 · Windows x64 v1.9.0
+# Herdr 플러그인 개발 인계 · Windows x64 v1.9.1
 
-2026-11-26 기준. 다른 컴퓨터에서 개발을 이어가려면 `Herdr-Mod-Kit-Dev-v1.9.0.zip` 하나를 복사해 압축을 풀고 `Herdr-Mod-Kit-Dev` 폴더를 작업 공간으로 여세요. 이 문서, 수정할 원본, 테스트, 설치 도구, 완성된 Windows 설치 ZIP이 들어 있습니다.
+2026-11-26 기준. 다른 컴퓨터에서 개발을 이어가려면 `Herdr-Mod-Kit-Dev-v1.9.1.zip` 하나를 복사해 압축을 풀고 `Herdr-Mod-Kit-Dev` 폴더를 작업 공간으로 여세요. 이 문서, 수정할 원본, 테스트, 설치 도구, 완성된 Windows 설치 ZIP이 들어 있습니다.
+
+## **v1.9.1** 변경 사항
+
+파일과 폴더 ZIP의 다운로드 이름이 겹치면 선택한 경로를 보존하고 덮어쓰기 또는 번호 사본 저장을 묻습니다. 사본 이름은 완성된 파일을 저장할 때 확정하므로 동시에 다운로드해도 기존 파일을 덮어쓰지 않습니다. 저장 위치를 고르는 중에 Herdr가 취소 신호를 보내면 그 작업이 띄운 PowerShell 저장 창을 닫습니다.
+
+이 PC의 Windows Herdr 0.1.18에서 설치된 모드로 일반 파일의 덮어쓰기와 `(1)`, `(2)` 저장, 폴더 ZIP의 번호 사본과 내부 파일 내용을 확인했습니다. 대상 파일을 잠가 다운로드를 실패시킨 뒤 **Retry → 저장 창 열림 → Herdr의 Cancel → 다른 세션 선택** 순서로 확인했을 때 두 창이 모두 닫히기까지 0.31초가 걸렸습니다. 시험 내내 탐색기 프로세스와 작업 표시줄 창 핸들이 유지됐습니다. [다운로드 충돌 선택 창](docs/screenshots/download-conflict.png)
+
+설치 ZIP으로 v1.9.0에서 업그레이드 후 재설치해 기존 단축키·설정·레이아웃·사용량 소스가 유지되는지 확인했습니다. Windows 단위 테스트 82개 중 79개가 통과했고, 실행 조건에 해당하지 않는 3개는 건너뛰었습니다.
+
+사용자 요청에 따라 v1.9.0 다음 배포부터 마지막 버전 숫자를 1씩 올립니다. 다운로드 수정 및 Windows 배포 검증에는 GPT-6.1 Sol / High를 권장하며 실제 세션 설정은 확인하지 않았습니다.
+
+## 보류 메모 · HTML 미리보기
+
+v1.9.0에서는 HTML의 CSS가 빠져 본문이 일반 텍스트처럼 보입니다. 사용자는 Files에서 HTML을 열었을 때 브라우저에서 보는 색상·레이아웃·이미지를 그대로 확인하고 싶다고 했습니다.
+
+검토안은 Edge가 탭 너비에 맞춰 그린 화면을 Herdr에 표시하고, 파일 저장이나 탭 너비 변경 시 갱신하는 방식입니다. 버튼 클릭과 폼 입력에는 별도의 **브라우저에서 열기**를 제안했습니다. 현재는 아이디어만 기록한 상태입니다.
+
+## v1.9.0 다운로드 취소 재현 · 2026-11-26
+
+이 PC의 Windows Herdr 0.1.18에서 설치된 모드를 별도 프로필로 열어 확인했습니다. Files에서 기존 파일과 같은 이름으로 저장하면 오류가 뜨고, Retry를 누르면 Windows 저장 창이 다시 열렸습니다. 이때 Herdr에 이전 오류와 Retry가 남았습니다. 테스트 창의 확대율을 바꿨다가 복원해 화면을 갱신하자 Cancel이 표시됐습니다.
+
+Cancel을 누르면 Herdr에 `Cancelling…`이 표시되고 취소 신호 파일도 생겼습니다. 다른 Herdr 세션으로 전환한 뒤에도 같은 Windows 저장 창이 열려 있었고, 저장 창 자체에서 취소해야 닫혔습니다. 기존 대상 파일의 내용은 보존됐습니다. 검증 중 Windows 셸의 PID·프로세스 시작 시각·작업 표시줄 창 핸들이 유지됐고 Windows 응용 프로그램 로그의 탐색기 충돌·응답 없음 기록은 0건이었습니다. 사용자가 증상을 본 다른 PC의 상태는 미확인입니다.
+
+이 재현 검증의 권장 모델은 GPT-6.1 Sol / High입니다. 두 창의 동작, 취소 신호, 셸 상태를 같은 시점에 대조하는 작업이며 실제 모델 설정은 확인하지 않았습니다.
 
 ## **v1.9.0** 변경 사항
 
@@ -46,8 +70,8 @@ v1.7.0의 측정값은 인계 당시의 Linux 결과입니다. Windows 확인 �
 
 ## 새 컴퓨터에서 시작
 
-1. Windows x64에 Herdr 데스크톱, herdr-core, Python 3.10 이상(x64)을 준비합니다. Herdr를 한 번 열어 기본 레이아웃을 생성합니다. v1.9.0 설치 ZIP은 Herdr 데스크톱 0.1.18에서 검증했습니다. JavaScript 테스트에는 Node.js가 필요합니다. 검증한 버전은 24입니다.
-2. `outputs/Herdr-Mod-Kit-Windows-x64-v1.9.0.zip`을 별도 폴더에 풀고 `Herdr-Mod-Kit/Install-Windows.cmd`를 실행합니다. 필요하면 Herdr의 **Settings → Look**에서 `herdr-mod-kit`을 선택합니다. 같은 폴더의 `Diagnose-Windows.cmd`가 기능별 검사 결과를 보여 줍니다.
+1. Windows x64에 Herdr 데스크톱, herdr-core, Python 3.10 이상(x64)을 준비합니다. Herdr를 한 번 열어 기본 레이아웃을 생성합니다. v1.9.1 설치 ZIP은 Herdr 데스크톱 0.1.18에서 검증했습니다. JavaScript 테스트에는 Node.js가 필요합니다. 검증한 버전은 24입니다.
+2. `outputs/Herdr-Mod-Kit-Windows-x64-v1.9.1.zip`을 별도 폴더에 풀고 `Herdr-Mod-Kit/Install-Windows.cmd`를 실행합니다. 필요하면 Herdr의 **Settings → Look**에서 `herdr-mod-kit`을 선택합니다. 같은 폴더의 `Diagnose-Windows.cmd`가 기능별 검사 결과를 보여 줍니다.
 3. 이 Windows PC에서는 사용량 대상을 `local`로 지정했습니다. 다른 PC에서 원격 서버 사용량이 필요하면 Herdr Machines에 연결한 머신 이름을 사용하세요. 최초 설치 기본값은 `local`이며 업데이트할 때는 기존 대상을 보존합니다.
 4. 이 체크아웃의 변경을 Windows에서 실행하려면 저장소 루트에서 아래 명령을 사용합니다. 첫 줄은 설치에 필요한 모드 소스를 준비합니다. 마지막 줄은 실행 중인 Herdr와 설치 파일을 검사합니다.
 
@@ -80,7 +104,7 @@ GitHub README와 릴리스 본문의 버전 소제목은 `## **vX.Y.Z** 변경 �
 
 - 기능은 위 표의 원본에서 수정합니다. `work/kit-tools/stage.py`가 원본을 배포용 모드 이름과 기능 선택 조건에 맞춰 변환합니다. Files 메뉴나 드래그 코드가 달라졌을 때 변환기가 알려 주는 코드 조각을 확인하세요. 변환 대상이 사라지면 빌드가 중단됩니다.
 - 설치·레이아웃·키 설정·진단은 `work/herdr-mod-kit/kit.py`가 담당합니다. 공용 로그는 `common/kit_log.py`에 있습니다. 공용 전송·문서 도우미는 설치 ZIP의 `common/`에 한 번 묶고, 설치할 때 Herdr JS 로더가 요구하는 모드에 복사합니다.
-- 기능을 수정한 뒤에는 작업 폴더에서 테스트하고, 사용자가 설치 파일 반영을 요청한 시점에만 배포본을 만듭니다. 이번 파일명은 v1.9.0이고 설치 기록과 진단에 표시되는 내부 버전은 1.9.0입니다. 기존 배포 이력은 `work/package-publish-notes.md`에 있습니다.
+- 기능을 수정한 뒤에는 작업 폴더에서 테스트하고, 사용자가 설치 파일 반영을 요청한 시점에만 배포본을 만듭니다. 이번 파일명은 v1.9.1이고 설치 기록과 진단에 표시되는 내부 버전은 1.9.1입니다. 기존 배포 이력은 `work/package-publish-notes.md`에 있습니다.
 
 다음 명령은 개발 ZIP을 푼 루트에서 실행합니다. `py`가 없는 환경에서는 `py -3`을 `python`으로 바꿉니다.
 
@@ -132,7 +156,7 @@ Windows x64 Herdr 0.1.17에서 v1.0(내부 1.3.0), v1.4.0, v1.5.0 설치본을 �
 $qa = Join-Path ([System.IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path "$qa/profile/layouts" -Force | Out-Null
 Copy-Item work/kit-tools/fixtures/main.json "$qa/profile/layouts/main.json"
-Expand-Archive outputs/Herdr-Mod-Kit-Windows-x64-v1.9.0.zip "$qa/install"
+Expand-Archive outputs/Herdr-Mod-Kit-Windows-x64-v1.9.1.zip "$qa/install"
 py -3 -X utf8 "$qa/install/Herdr-Mod-Kit/kit.py" install --app-home "$qa/profile"
 py -3 -X utf8 "$qa/install/Herdr-Mod-Kit/kit.py" diagnose --app-home "$qa/profile"
 node work/kit-tools/check-tabs-and-links.cjs "$qa/profile"

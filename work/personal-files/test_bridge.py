@@ -245,6 +245,50 @@ class Transfers(unittest.TestCase):
         self.assertEqual(caught.exception.code, 'exists')
         self.assertEqual(chosen.read_bytes(), b'keep')
 
+    def test_download_decision_uses_the_selected_name_across_retries(self):
+        source = self.remote / 'input.bin'
+        source.write_bytes(b'new data')
+        chosen = self.local / '보고서.txt'
+        chosen.write_bytes(b'original')
+        first_copy = self.local / '보고서 (1).txt'
+        first_copy.write_bytes(b'previous copy')
+        with self.assertRaises(bridge.Failure) as collision:
+            self.selected_download(source, chosen)
+        resume = collision.exception.resume
+        self.assertIsNotNone(resume)
+        copies = [self.selected_download(source, None, resume=resume, keep_both=True) for _ in range(2)]
+        self.assertEqual([Path(item['path']).name for item in copies], ['보고서 (2).txt', '보고서 (3).txt'])
+        self.assertEqual(chosen.read_bytes(), b'original')
+        self.assertEqual(first_copy.read_bytes(), b'previous copy')
+        result = self.selected_download(source, None, resume=resume, overwrite=True)
+        self.assertEqual(Path(result['path']), chosen)
+        self.assertEqual(chosen.read_bytes(), b'new data')
+
+    def test_numbered_file_choice_survives_a_transfer_slice(self):
+        class EndSlice(bridge.Control):
+            def due(self): return True
+        source=self.remote/'original'
+        source.write_bytes(b'new')
+        target=self.downloads/'selected'
+        target.write_bytes(b'old')
+        with self.assertRaises(bridge.Failure) as collision:
+            self.selected_download(source,target)
+        with patch.object(bridge,'Control',EndSlice):
+            partial=self.selected_download(source,None,resume=collision.exception.resume,keep_both=True)
+        result=self.selected_download(source,None,resume=partial['resume'])
+        self.assertEqual(Path(result['path']),target.with_name('selected (1)'))
+        self.assertEqual(target.read_bytes(),b'old')
+
+    def test_concurrent_keep_both_downloads_publish_distinct_names(self):
+        source = self.remote / 'note'
+        source.write_bytes(b'content')
+        original = self.downloads / 'note'
+        original.write_bytes(b'original')
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            results = list(pool.map(lambda _: bridge.local_download(source,self.downloads,keep_both=True), range(3)))
+        self.assertEqual({Path(r['path']).name for r in results}, {'note (1)', 'note (2)', 'note (3)'})
+        self.assertEqual(original.read_bytes(), b'original')
+
     def test_cancel_save_as_creates_no_file(self):
         source = self.remote / 'original.txt'
         source.write_bytes(b'original')

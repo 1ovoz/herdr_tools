@@ -221,7 +221,11 @@ assert.equal(ids.get('close-job').styles.disabled[0],true);
 assert.equal(ids.get('cancel-job').styles.disabled[0],false,'A running transfer can be cancelled');
 await finish();
 checkFooter(render(uploadJob,uploadProps),'close-job','retry-file');
-bridgeResult = {ok:false,code:'exists',error:'File exists'}; click('retry-file'); await finish();
+bridgeResult = {ok:false,code:'exists',error:'File exists'};
+const beforeRetryPaint = paints;
+click('retry-file');
+assert.ok(paints > beforeRetryPaint, 'Retry must repaint before the location picker or helper returns');
+await finish();
 const replace = checkFooter(render(uploadJob,uploadProps),'close-job','replace-file');
 assert.equal(replace.styles.border_color[0],'ansi1');
 bridgeResult = {ok:true,path:'/project/a.pdf'}; click('replace-file'); await finish();
@@ -644,7 +648,8 @@ checkFooter(zipDialog,'close-job','cancel-job');
 work.worker.progress = {phase:'download',done:1048576,total:4*1048576};
 assert.match(dialogText(render(work.worker,work.p)),/25%/);
 await finish();
-checkFooter(render(work.worker,work.p),'close-job','replace-file');
+render(work.worker,work.p);
+assert.ok(ids.has('keep-both') && ids.has('replace-file') && ids.has('close-job'));
 bridgeResult = {ok:true,path:'C:\\Downloads\\folder.zip'};
 click('replace-file'); await finish();
 assert.deepEqual(jobs.at(-1).resume,zipResume);
@@ -654,10 +659,12 @@ popup = menuAt(rootCreation,'files-tree'); click('download-zip');
 assert.equal(overlays.at(-1).props.requests[0].source,'C:\\repo\\');
 bridgeResult = {ok:true,partial:true,resume:zipResume};
 work = fileJob(); render(work.worker,work.p); click('cancel-job');
+const closedBeforeCancelAck=closed.length;
 await finish();
 assert.equal(jobs.at(-1).action,'discard');
 assert.deepEqual(jobs.at(-1).resume,zipResume);
 assert.equal(work.worker.result.cancelled,true);
+assert.deepEqual(closed.slice(closedBeforeCancelAck),['job'],'The acknowledged download cancel dismisses its job dialog');
 popup = menuAt(files,'file-a.pdf');
 assert.ok(!ids.has('new-file') && !ids.has('new-folder') && !ids.has('download-zip'));
 if (staged) {
@@ -666,6 +673,19 @@ if (staged) {
   assert.ok(!ids.get('file-folder').handlers['on_mouse_down:right']);
   assert.ok(!ids.get('files-tree').handlers['on_mouse_down:right']);
 }
+
+// The ordinary Save As path retains the chosen destination and offers a numbered copy.
+popup=menuAt(files,'file-a.pdf'); click('download');
+const chosenState=JSON.stringify({kind:'destination',directory:'C:/Downloads',filename:'report.pdf'});
+bridgeResult={ok:false,code:'exists',error:'Replace report.pdf?',resume:chosenState};
+work=fileJob(); await finish();
+render(work.worker,work.p);
+assert.ok(ids.has('keep-both') && ids.has('replace-file') && !ids.has('retry-file'));
+bridgeResult={ok:true,path:'C:/Downloads/report (1).pdf'};
+click('keep-both'); await finish();
+assert.equal(jobs.at(-1).keep_both,true);
+assert.ok(!jobs.at(-1).overwrite);
+assert.equal(jobs.at(-1).resume,chosenState);
 
 // Both source and staged panels expose the same two-row toolbar.
 const toolbar = panel('C:/repo/',null);

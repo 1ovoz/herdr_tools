@@ -29,6 +29,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 import hashlib
+from itertools import count
 from html import escape
 from html.parser import HTMLParser
 import math
@@ -289,21 +290,32 @@ def resumed_part(directory, state, prefix):
     if not usable:raise Failure('transfer','This transfer can no longer continue. Start it again.')
     return part,offset
 
-def publish_download(part, target, overwrite, private=False):
+def publish_download(part, target, overwrite, private=False, keep_both=False):
     if os.name!='nt' and not private:os.chmod(part,file_host.publish_mode(target,overwrite))
+    if keep_both:
+        for number in count(1):
+            candidate = target.with_name(f'{target.stem} ({number}){target.suffix}')
+            if os.path.lexists(candidate):
+                continue
+            try:
+                file_host.publish_new_file(part,candidate)
+                return candidate
+            except FileExistsError:
+                continue  # Another download claimed this name after the check.
     if overwrite:os.replace(part,target)
     else:
         try:file_host.publish_new_file(Path(part),target)
         except FileExistsError:raise Failure('exists','A file with this name already exists. Replace it?')
+    return target
 
-def download(client, source, target_dir, overwrite=False, progress=None, filename=None, info=None, control=None, resume=None, private=False):
+def download(client, source, target_dir, overwrite=False, progress=None, filename=None, info=None, control=None, resume=None, private=False, keep_both=False):
     control=control or Control()
     remote=bool(getattr(client,'on',None))
     leaf=source.rsplit('/',1)[-1] if remote else Path(source).name
     name=safe_leaf(filename or leaf)
     directory=Path(target_dir);directory.mkdir(parents=True,exist_ok=True)
     target=directory/name
-    if os.path.lexists(target) and not overwrite: raise Failure('exists','A file with this name already exists. Replace it?',resume)
+    if os.path.lexists(target) and not overwrite and not keep_both: raise Failure('exists','A file with this name already exists. Replace it?',resume)
     if resume:
         part,offset=resumed_part(directory,resume,'.herdr-download-')
         info,step=resume['info'],resume['step']
@@ -363,13 +375,13 @@ def download(client, source, target_dir, overwrite=False, progress=None, filenam
         if actual!=expected:raise Failure('hash','Download verification failed; retry.')
         marked=mark_download(part) if os.name=='nt' and remote else True
         control.check()
-        publish_download(part,target,overwrite,private)
+        target=publish_download(part,target,overwrite,private,keep_both)
         return {'path':str(target),'size':offset,'sha256':actual,'zone_marked':marked}
     finally:
         if not keep:
             with suppress(OSError):part.unlink(missing_ok=True)
 
-def local_copy(source, target, overwrite, prefix, progress, control, resume):
+def local_copy(source, target, overwrite, prefix, progress, control, resume, keep_both=False):
     """Copy between folders of this computer in one pass, without the chunk protocol used for other machines."""
     control=control or Control()
     before=file_revision(source)
@@ -401,7 +413,7 @@ def local_copy(source, target, overwrite, prefix, progress, control, resume):
         if before!=file_revision(source) or offset!=before[0]:raise Failure('changed','The source changed. Retry.')
         sha=digest.hexdigest() if digest else file_digest(part)
         control.check()
-        publish_download(part,target,overwrite)
+        target=publish_download(part,target,overwrite,keep_both=keep_both)
         return {'path':str(target),'size':offset,'sha256':sha}
     finally:
         if not keep:
@@ -416,13 +428,13 @@ def local_upload(source, target_dir, overwrite=False, progress=None, control=Non
     if os.path.lexists(target) and not overwrite: raise Failure('exists','A file with this name already exists. Replace it?',resume)
     return local_copy(source,target,overwrite,'.herdr-upload-',progress,control,resume)
 
-def local_download(source, target_dir, overwrite=False, progress=None, filename=None, control=None, resume=None):
+def local_download(source, target_dir, overwrite=False, progress=None, filename=None, control=None, resume=None, keep_both=False):
     source=Path(source)
     if not source.is_file(): raise Failure('transfer','Select an individual file')
     directory=Path(target_dir);directory.mkdir(parents=True,exist_ok=True)
     target=directory/safe_leaf(filename or source.name)
-    if os.path.lexists(target) and not overwrite: raise Failure('exists','A file with this name already exists. Replace it?',resume)
-    return {**local_copy(source,target,overwrite,'.herdr-download-',progress,control,resume),'zone_marked':True}
+    if os.path.lexists(target) and not overwrite and not keep_both: raise Failure('exists','A file with this name already exists. Replace it?',resume)
+    return {**local_copy(source,target,overwrite,'.herdr-download-',progress,control,resume,keep_both),'zone_marked':True}
 
 def downloads_folder():
     if os.name=='nt':
@@ -431,7 +443,7 @@ def downloads_folder():
             return os.path.expandvars(winreg.QueryValueEx(key,'{374DE290-123F-4565-9164-39C4925E467B}')[0])
     return str(Path.home()/'Downloads')
 
-def choose_download_path(name, zip_archive=False):
+def choose_download_path(name, zip_archive=False, control=None):
     if os.name!='nt':
         raise Failure('dialog','The download location picker requires the Windows desktop.')
     try:
@@ -463,57 +475,90 @@ try {
     }
 } finally { $dialog.Dispose() }
 '''
-    completed=subprocess.run(
+    control = control or Control()
+    control.check()
+    options = json.dumps(dict(name=suggested,directory=downloads_folder(),zip=zip_archive))
+    # Each picker owns a dedicated PowerShell process. Only stop this job's picker.
+    with subprocess.Popen(
         [str(Path(os.environ['SystemRoot'])/'System32'/'WindowsPowerShell'/'v1.0'/'powershell.exe'),
          '-NoProfile','-NonInteractive','-STA','-Command',script],
-        input=json.dumps(dict(name=suggested,directory=downloads_folder(),zip=zip_archive)),
-        encoding='utf-8',capture_output=True,creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-    if completed.returncode:
-        raise Failure('dialog','Could not open the Windows download location picker.')
-    return Path(completed.stdout) if completed.stdout else None
+        stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+        encoding='utf-8',creationflags=subprocess.CREATE_NO_WINDOW,
+    ) as picker:
+        try:
+            while True:
+                control.check()
+                try:
+                    selected,_ = picker.communicate(options,timeout=0.2)
+                    break
+                except subprocess.TimeoutExpired:
+                    options = None
+            control.check()
+        finally:
+            if picker.poll() is None:
+                picker.kill()
+                picker.communicate()
+        if picker.returncode:
+            raise Failure('dialog','Could not open the Windows download location picker.')
+    return Path(selected) if selected else None
 
 def fetch(client, source, directory, **options):
     if client.on:return download(client,source,directory,**options)
     return local_download(source,directory,**options)
 
-def download_as(client, source, progress, control=None, resume=None):
+def download_file(client, request, progress, control, resume):
+    source=request['source']
+    leaf=source.rsplit('/',1)[-1] if client.on else Path(source).name
+    control.check()
     if resume:
-        # The location was chosen when this download began.
-        directory,name=resume['directory'],resume['filename']
+        target=Path(resume['directory'])/safe_leaf(resume['filename'])
+    elif request.get('choose'):
+        target=choose_download_path(leaf,control=control)
+        if target is None:return {'cancelled':True}
     else:
-        leaf=source.rsplit('/',1)[-1] if client.on else Path(source).name
-        target=choose_download_path(leaf)
-        if target is None:
-            return {'cancelled':True}
-        directory,name=target.parent,target.name
+        target=Path(request.get('directory') or downloads_folder())/safe_leaf(leaf)
+    if target.is_dir():raise Failure('folder','Choose a file as the download destination.')
+    # A decision about one chosen path must never follow a new Save As selection.
+    confirmed = bool(resume) or not request.get('choose')
+    previous = resume or {}
+    overwrite = confirmed and request.get('overwrite', previous.get('overwrite')) is True
+    keep_both = confirmed and request.get('keep_both', previous.get('keep_both')) is True
+    transfer = resume if resume and resume.get('part') else None
     try:
-        return fetch(client,source,directory,progress=progress,filename=name,control=control,resume=resume)
+        result=fetch(client,source,target.parent,filename=target.name,overwrite=overwrite,
+                     keep_both=keep_both,progress=progress,control=control,resume=transfer)
+        if result.get('partial'):
+            result['resume'].update(overwrite=overwrite,keep_both=keep_both)
+        return result
     except Failure as error:
-        if error.code=='exists':
-            raise Failure('exists','This name is already in use. Choose a different download name.') from error
-        raise
+        if error.code!='exists':
+            if error.resume:error.resume.update(overwrite=overwrite,keep_both=keep_both)
+            raise
+        destination = error.resume or {'kind':'destination','directory':str(target.parent),'filename':target.name}
+        raise Failure('exists',f'Replace the existing file at {target}?',destination) from error
 
-def download_zip(client, source, progress, control, resume=None, overwrite=False):
+def download_zip(client, source, progress, control, resume=None, overwrite=False, keep_both=False):
     if resume:
         if resume.get('kind')!='zip':raise Failure('transfer','Invalid ZIP job.')
         state=dict(resume)
         target=Path(state['directory'])/safe_leaf(state['filename'])
         if overwrite:state['overwrite']=True
+        if keep_both:state['keep_both']=True
     else:
         leaf=re.split(r'[/\\]',source.rstrip('/\\'))[-1] if client.on else Path(source).name
         suggestion=(leaf or 'folder')+'.zip'
-        target=choose_download_path('folder.zip' if re.search(WINDOWS_INVALID_LEAF,suggestion) else suggestion,zip_archive=True)
+        target=choose_download_path('folder.zip' if re.search(WINDOWS_INVALID_LEAF,suggestion) else suggestion,zip_archive=True,control=control)
         if target is None:return {'cancelled':True}
         if not target.suffix:target=target.with_name(target.name+'.zip')
         safe_leaf(target.name)
         state={'kind':'zip','directory':str(target.parent),'filename':target.name}
     overwrite=state.get('overwrite') is True
+    keep_both=state.get('keep_both') is True
     keep=False
     try:
         control.check()
         if target.is_dir():raise Failure('folder','Choose a file as the ZIP destination.')
-        if os.path.lexists(target) and not overwrite:
+        if os.path.lexists(target) and not overwrite and not keep_both:
             raise Failure('exists','The ZIP destination already exists.')
         if not state.get('started'):
             token=state.setdefault('token',uuid.uuid4().hex)
@@ -530,7 +575,7 @@ def download_zip(client, source, progress, control, resume=None, overwrite=False
             if status.get('ready'):break
             progress(status['done'],0,'archive')
         control.check()
-        options=dict(overwrite=overwrite,progress=lambda done,total:progress(done,total,'download'),
+        options=dict(overwrite=overwrite,keep_both=keep_both,progress=lambda done,total:progress(done,total,'download'),
                      control=control,resume=state.get('transfer'),filename=target.name)
         result=fetch(client,status['path'],target.parent,**options)
         if result.get('partial'):
@@ -824,14 +869,10 @@ def main():
         elif action=='delete':result=client.request(action,path=q['source'],confirmed=q.get('confirmed'))
         elif action=='download-zip':
             sweep_jobs(jobs)
-            result=download_zip(client,q['source'],progress,control,resume,q.get('overwrite') is True)
+            result=download_zip(client,q['source'],progress,control,resume,q.get('overwrite') is True,q.get('keep_both') is True)
         elif action=='download':
             sweep_jobs(jobs)
-            if q.get('choose'):
-                result=download_as(client,q['source'],progress,control,resume)
-            else:
-                directory=resume['directory'] if resume else q.get('directory') or downloads_folder()
-                result=fetch(client,q['source'],directory,overwrite=q.get('overwrite',False),progress=progress,control=control,resume=resume)
+            result=download_file(client,q,progress,control,resume)
             if q.get('open') and not result.get('cancelled') and not result.get('partial'):open_download(result)
         elif action=='discard':
             discard(client,resume);result={}
@@ -879,6 +920,10 @@ def main():
         # The UI echoes this state. Keep native file IDs and nanosecond timestamps out of JS numbers.
         if result.get('resume') is not None:
             result['resume']=json.dumps(result['resume'],separators=(',',':'))
+    except Failure as error:
+        if error.code == 'cancelled' and resume:
+            discard(client,resume)
+        raise
     finally:
         # A transfer that continues in the next run keeps its progress on screen.
         if not unfinished:

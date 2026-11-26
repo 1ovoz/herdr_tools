@@ -2,15 +2,22 @@
 
 Windows용 Herdr에 파일 관리, 문서 뷰어, 분할 탭, 사용량 표시를 추가합니다.
 
+## **v1.9.1** 변경 사항
+
+- 파일·폴더 ZIP을 다운로드할 때 같은 이름이 있으면 **Yes, replace**로 덮어쓰거나 **No, keep both**로 `보고서 (1).pdf`, `보고서 (2).pdf`처럼 저장합니다.
+- 저장 위치 창이 열린 동안 Herdr의 **Cancel**을 누르면 해당 창과 다운로드 작업이 함께 닫힙니다. 실패 후 **Retry**를 누르면 다시 열린 저장 창에서 바로 취소할 수 있습니다.
+
+[Windows x64 설치 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Windows-x64-v1.9.1.zip) · [개발 인계 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Dev-v1.9.1.zip) · [SHA-256](outputs/SHA256SUMS)
+
+설치 ZIP의 압축을 풀고 `Herdr-Mod-Kit/Install-Windows.cmd`를 실행하세요. 기존 설치도 같은 방법으로 업데이트합니다.
+
+![같은 이름의 파일을 다운로드할 때 덮어쓰기, 번호 사본 저장, 취소를 고르는 창](docs/screenshots/download-conflict.png)
+
 ## **v1.9.0** 변경 사항
 
 Files 제목 아래에 새 파일, 새 폴더, 새로고침 아이콘이 생겼습니다. 왼쪽에서 작업을 고르고 오른쪽에서 선택한 항목 이름을 확인하세요. 파일을 선택한 상태에서 새 항목을 만들면 같은 폴더에 생성됩니다.
 
 HTML 파일(`.html`, `.htm`)을 더블클릭하면 문서 탭에서 제목·목록·강조 등 기본 서식으로 읽을 수 있습니다. **Source**와 **Preview**로 원문과 미리보기를 전환합니다. 외부 리소스, CSS와 JavaScript는 실행하거나 불러오지 않습니다.
-
-[Windows x64 설치 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Windows-x64-v1.9.0.zip) · [개발 인계 ZIP 다운로드](https://github.com/1ovoz/herdr_tools/raw/refs/heads/main/outputs/Herdr-Mod-Kit-Dev-v1.9.0.zip) · [SHA-256](outputs/SHA256SUMS)
-
-설치 ZIP의 압축을 풀고 `Herdr-Mod-Kit/Install-Windows.cmd`를 실행하세요. 기존 설치도 같은 방법으로 업데이트합니다.
 
 ## Requirements
 

@@ -85,6 +85,22 @@ class FolderDownload(unittest.TestCase):
             self.assertEqual(bundle.namelist(), ['자료/'])
         self.assertEqual(self.suggestions, ['자료.zip'])
 
+    def test_numbered_zip_keeps_existing_files_after_a_slice(self):
+        class EndSlice(bridge.Control):
+            def due(self): return True
+        self.target.write_bytes(b'old zip')
+        self.target.with_stem('사본 (1)').write_bytes(b'old copy')
+        with self.assertRaises(bridge.Failure) as collision:
+            self.run_job(self.target)
+        with patch.object(bridge, 'Control', EndSlice):
+            partial = self.run_job(None, resume=collision.exception.resume, keep_both=True)
+        result = self.run_job(None, resume=partial['resume'])
+        self.assertEqual(Path(result['path']), self.target.with_stem('사본 (2)'))
+        with zipfile.ZipFile(result['path']) as archive:
+            self.assertEqual(archive.namelist(), ['자료/'])
+        self.assertEqual(self.target.read_bytes(), b'old zip')
+        self.assertEqual(self.suggestions, ['자료.zip'])
+
     def test_cancel_picker_creates_nothing(self):
         self.assertEqual(self.run_job(None), dict(ok=True, cancelled=True))
         self.assertFalse(self.target.exists())
