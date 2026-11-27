@@ -1,6 +1,6 @@
 // A lazy file browser for the focused pane's folder, with bounded read-only previews.
 import { div, svg } from "gpui-kit";
-import { v_flex, h_flex, Button, Editor, EditorState, Input, InputState } from "gpui-base";
+import { v_flex, h_flex, Button, Editor, EditorState, Input, InputState, Progress, ProgressTrack, ProgressIndicator } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, settings, window, props, checking, appHome, openOverlay, closeOverlay, shared, setShared, run, layout, notify } from "herdr";
 import { bridge, jobId, uploadRequests } from "./actions.js";
 import { DocumentView } from "./document-view.js";
@@ -27,6 +27,7 @@ const GIT_ONLY = "\0git";
 // Programs a repository's own config can make `git status` run.
 const GIT_COMMAND_KEYS = "^(filter\\..*\\.(clean|smudge|process)|core\\.fsmonitor)$";
 const CHANGE_DIALOG_HEIGHT = 210, JOB_DIALOG_HEIGHT = 300;
+const TRANSFER_ACTIONS = new Set(["upload","download","download-zip"]);
 const CLIPBOARD = "personal-files.clipboard";
 const TRUSTED = "personal-files.trusted-repositories";
 const FILE_ACTIONS = [
@@ -57,6 +58,13 @@ const CHANGE_DIALOGS = {
   rename: {title:"Rename file", button:"Rename", directory:false},
   delete: {title:"Permanently delete this file?", button:"Delete permanently", directory:false},
 };
+
+function transferBytes(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 ** 2) return (bytes/1024).toFixed(1) + " KiB";
+  if (bytes < 1024 ** 3) return (bytes/1024 ** 2).toFixed(1) + " MiB";
+  return (bytes/1024 ** 3).toFixed(1) + " GiB";
+}
 
 function menuTarget(root, on, relative, dir, name) {
   const windows = /^[A-Za-z]:[\\/]|^\\\\/.test(root) ||
@@ -203,10 +211,7 @@ export default class Files extends DocumentView {
     }
     if (this.mode === "job") {
       this.queue = props().requests || []; this.index = 0;
-      if (!checking()) {
-        this.work(cx);
-        cx.timer.every(1000, cx => this.pollProgress(cx));
-      }
+      if (!checking()) this.work(cx);
       return;
     }
     if (this.mode === "pdf" || this.mode === "document" || this.mode === "group") { this.initDocument(cx); return; }
@@ -576,12 +581,18 @@ export default class Files extends DocumentView {
   }
 
   async pollProgress(cx) {
-    const job = this.queue?.[this.index]?.job;
-    if (!this.busy || !job || this.polling) return;
+    const current = this.queue?.[this.index];
+    if (!this.busy || this.cancelling || this.error || !TRANSFER_ACTIONS.has(current?.action) || this.polling) return;
+    const job = current.job;
     this.polling = true;
     try {
       const text = await readTextFile(`${appHome()}/data/personal-files/jobs/${job}.json`);
-      if (text && this.queue?.[this.index]?.job === job) { this.progress = JSON.parse(text); cx.notify(); }
+      if (!text || !this.busy || this.cancelling || this.queue[this.index]?.job !== job) return;
+      const snapshot = JSON.parse(text);
+      if (Number.isFinite(snapshot?.done) && snapshot.done >= 0) {
+        this.progress = snapshot;
+        cx.notify();
+      }
     } catch {} finally { this.polling = false; }
   }
 
@@ -613,12 +624,18 @@ export default class Files extends DocumentView {
       this.queue[this.index].keep_both = choice === "keep-both";
     }
     const retry = Boolean(this.error);
+    if (retry && TRANSFER_ACTIONS.has(this.queue[this.index].action)) {
+      // A late snapshot or a locked progress file from the previous attempt belongs to its old job.
+      this.queue[this.index].job = jobId();
+    }
+    this.progress = null;
     this.busy = true; this.error = null; this.collision = false; this.cancelling = false;
     if (retry) cx.notify();
+    const poll = this.queue.some(item=>TRANSFER_ACTIONS.has(item.action))
+      ? cx.timer.every(250, tick=>this.pollProgress(tick)) : null;
     cx.spawn(async cx => {
       try {
         while (this.index < this.queue.length) {
-          this.progress = null;
           const {cutId,...request} = this.queue[this.index];
           let value = await bridge(request);
           // A long transfer returns before the app's time limit and continues from where it stopped.
@@ -649,13 +666,14 @@ export default class Files extends DocumentView {
           }
           this.result = value;
           this.index++;
+          this.progress = null;
           if (cutId && shared(CLIPBOARD)?.id === cutId) setShared(CLIPBOARD,null);
           setShared("personal-files.changed", request.action === "move"
             ? {id:request.job,source:request.source,on:request.on} : jobId());
           cx.notify();
         }
       } catch (e) { this.error = String(e); }
-      finally { this.busy = false; this.cancelling = false; cx.notify(); }
+      finally { poll?.cancel(); this.busy = false; this.cancelling = false; cx.notify(); }
     });
   }
 
@@ -695,17 +713,22 @@ export default class Files extends DocumentView {
     const title=current?.action==="upload"?"Upload to "+(current.on||"this computer"):
       ({copy:"Copy file",move:"Move file",folder:"Open Downloads folder","download-zip":"Download folder as ZIP"})[current?.action] || "Download";
     const cancelled = done && this.result?.cancelled;
-    const progress=this.progress;
+    const stoppable = this.busy && TRANSFER_ACTIONS.has(current?.action);
+    const progress = stoppable && !this.cancelling && !this.error ? this.progress : null;
+    let percent = null;
     const askReplace = this.collision && current?.action !== "upload";
     let status = "Ready";
     if (askReplace) status = "Keep both saves a numbered copy in the same folder.";
     else if (this.error) status = this.error;
     else if (this.cancelling) status = "Cancelling…";
     else if (this.busy) {
-      if (progress?.phase === "archive") status = "Creating ZIP… · " + (progress.done/1048576).toFixed(1) + " MiB";
-      else if (progress) {
-        const percent = Math.round(progress.done/Math.max(1,progress.total)*100);
-        status = percent + "% · " + (progress.done/1048576).toFixed(1) + " / " + (progress.total/1048576).toFixed(1) + " MiB";
+      if (progress) {
+        const bytes = transferBytes(progress.done);
+        if (progress.phase === "archive") status = "Creating ZIP… · " + bytes;
+        else if (Number.isFinite(progress.total) && progress.total > 0) {
+          percent = Math.min(100, Math.floor(progress.done * 100 / progress.total));
+          status = percent + "% · " + bytes + " / " + transferBytes(progress.total);
+        } else status = "Transferring… · " + bytes;
       } else status = current?.choose && !current.resume ? "Choose where to save the download…" : "Connecting…";
     } else if (cancelled) status = "";
     else if (done) status = this.result?.message || this.index + " operation(s) completed";
@@ -713,9 +736,13 @@ export default class Files extends DocumentView {
       .child(div().flex_none().text_color(t.muted).truncate()
         .tooltip(askReplace ? this.error : current?.source || this.result?.path || "")
         .child(askReplace ? this.existingName : current?.source || this.result?.path || ""))
-      .child(div().flex_none().text_color(this.error && !askReplace?t.blocked:t.muted).child(status))
+      .child(div().flex_none().text_color(this.error && !askReplace?t.blocked:t.muted)
+        .when(percent !== null, label=>label.tooltip(progress.done + " / " + progress.total + " bytes")).child(status))
+      .when(percent !== null, el=>el.child(Progress.new("transfer-progress").accessibility_label("Transfer progress")
+        .value(percent).w_full().h(8).flex_none()
+        .child(ProgressTrack.new().w_full().h_full().rounded(4).overflow_hidden().bg(t.border)
+          .child(ProgressIndicator.new().w(percent + "%").h_full().bg(t.accent)))))
       .when(current?.action==="upload",el=>el.child(div().flex_none().text_color(t.dim).truncate().child(`Folder: ${current.directory}`)));
-    const stoppable = this.busy && ["upload","download","download-zip"].includes(current?.action);
     const actions = h_flex()
       .child(this.dialogButton("close-job",this.busy ? "Working…" : askReplace ? "Cancel" : "Close",cx=>this.closeJob(cx)))
       .when(stoppable, el=>el.child(this.dialogButton("cancel-job","Cancel",cx=>this.cancelJob(cx),"danger",this.cancelling)))

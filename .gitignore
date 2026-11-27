@@ -7,5 +7,6 @@ __pycache__/
 /work/herdr-mod-kit/common/actions.js
 /work/herdr-mod-kit/common/bridge.py
 /work/herdr-mod-kit/common/file_host.py
+/work/herdr-mod-kit/common/html_preview.py
 /work/herdr-mod-kit/common/document-drag.js
 /work/herdr-mod-kit/common/document-flow.js

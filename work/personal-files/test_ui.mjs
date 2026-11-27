@@ -48,6 +48,7 @@ const context = {
   uploadRequests: (paths,directory,on) => paths.map(source => ({action:'upload',source,directory,on})),
   InputState: {new: ({value}) => ({value:() => value, set_value(next) { value = next; }, on() {}, focus() {}, set_selected_range() {}})},
   Button: {new: id => element().id(id)}, Input: {new:element}, EditorState:{}, Editor:{}, notify() {},
+  Progress: {new: id => element().id(id)}, ProgressTrack: {new:element}, ProgressIndicator: {new:element},
   spaces:() => [], panes:() => [], focused:() => focusedPane, window:() => ({platform:'windows',active:windowActive}),
   exec: async (program,args,options) => {
     if (program === 'git') { gitCalls.push(args); return gitMock ? gitMock(args,options) : {code:1}; }
@@ -494,12 +495,42 @@ assert.equal(paced.file.quiet,7);
 
 // A long transfer continues across helper runs, can be cancelled, and resumes after an interruption.
 const jobPath = staged ? '/data/herdr-mod-kit/files/jobs/' : '/data/personal-files/jobs/';
+async function reportProgress(worker, snapshot) {
+  context.readTextFile = async path => path === 'C:/app' + jobPath + worker.queue[worker.index].job + '.json'
+    ? JSON.stringify(snapshot) : null;
+  await worker.pollProgress(cx);
+}
+function checkMeter(dialog, percent, bytes) {
+  const meter = ids.get('transfer-progress');
+  assert.ok(meter, 'A transfer with a known total must draw a progress bar');
+  assert.ok(dialogText(dialog).includes(percent + '% · ' + bytes), 'The status must show the transferred and total bytes');
+  assert.equal(meter.styles.value[0],percent);
+  assert.equal(meter.contents[0].contents[0].styles.w[0],percent + '%','The fill and percentage must agree');
+}
+function checkNoMeter(dialog, message) {
+  assert.match(dialogText(dialog), message);
+  assert.doesNotMatch(dialogText(dialog), /%|NaN|Infinity/);
+  assert.ok(!ids.has('transfer-progress'), 'Only a measured transfer can show a percentage');
+}
 const longProps = {mode:'job',overlay:'long',transfer:true,requests:[{action:'upload',source:'big.bin',directory:'/project',on:'lab',job:'long'}]};
 function longJob(...replies) {
   bridgeReplies.push(...replies);
   const worker = view(longProps);
   worker.work(cx);
   return worker;
+}
+{
+  const job = view(longProps);
+  let polling = false;
+  const timer = {every(ms) {
+    assert.equal(ms,250);
+    polling = true;
+    return {cancel() { polling = false; }};
+  }};
+  job.work({...cx,timer});
+  assert.ok(polling,'Start the progress timer when a transfer runs');
+  await finish();
+  assert.equal(polling,false,'Stop the timer before the completed dialog closes');
 }
 bridgeResult = {ok:true,path:'/project/big.bin'};
 let sent = jobs.length;
@@ -508,11 +539,12 @@ await finish();
 assert.deepEqual(jobs.slice(sent).map(q => q.resume),[undefined,{offset:1},{offset:2}],'Each run continues from the last');
 assert.equal(long.index,1);
 long = longJob({ok:false,code:'cancelled',error:'Transfer cancelled.'});
-render(long,longProps);
+await reportProgress(long,{done:9,total:12});
+checkMeter(render(long,longProps),75,'9 B / 12 B');
 click('cancel-job'); click('cancel-job');
 assert.equal(written.length,1,'Cancel is asked once');
 assert.deepEqual(written[0],['C:/app' + jobPath + 'long.cancel','1',null]);
-render(long,longProps);
+checkNoMeter(render(long,longProps),/Cancelling/);
 assert.equal(ids.get('cancel-job').styles.disabled[0],true);
 await finish();
 assert.ok(render(long,longProps).contents[0].contents.includes('Cancelled'));
@@ -527,9 +559,21 @@ assert.deepEqual(jobs.slice(sent).map(q => q.action),['upload','discard'],'Witho
 assert.deepEqual(jobs.at(-1).resume,{offset:3});
 assert.equal(long.result.cancelled,true);
 long = longJob({ok:false,code:'connection',error:'Link dropped',resume:{offset:5}});
+await reportProgress(long,{done:5,total:10});
+checkMeter(render(long,longProps),50,'5 B / 10 B');
+let finishOldRead;
+context.readTextFile = () => new Promise(resolve => { finishOldRead=resolve; });
+const latePoll = long.pollProgress(cx);
 await finish();
-checkFooter(render(long,longProps),'close-job','retry-file');
-click('retry-file'); await finish();
+checkNoMeter(render(long,longProps),/Link dropped/);
+click('retry-file');
+checkNoMeter(render(long,longProps),/Connecting/);
+finishOldRead(JSON.stringify({done:8,total:10}));
+await latePoll;
+checkNoMeter(render(long,longProps),/Connecting/);
+await reportProgress(long,{done:6,total:10});
+checkMeter(render(long,longProps),60,'6 B / 10 B');
+await finish();
 assert.deepEqual(jobs.at(-1).resume,{offset:5},'Retry continues an interrupted transfer');
 assert.equal(long.index,1);
 long = longJob({ok:false,code:'connection',error:'Link dropped',resume:{offset:7}});
@@ -639,14 +683,14 @@ assert.deepEqual({...zipRequest},{action:'download-zip',source:'/project/folder'
 const zipResume = {kind:'zip',token:'selected-destination'};
 bridgeResult = {ok:false,code:'exists',error:'The selected file exists.',resume:zipResume};
 work = fileJob();
-work.worker.progress = {phase:'archive',done:3*1048576,total:0};
+await reportProgress(work.worker,{phase:'archive',done:3*1048576,total:0});
 let zipDialog = render(work.worker,work.p);
 assert.match(dialogText(zipDialog),/ZIP/);
 assert.match(dialogText(zipDialog),/3\.0/);
-assert.doesNotMatch(dialogText(zipDialog),/%|NaN/);
+checkNoMeter(zipDialog,/Creating ZIP/);
 checkFooter(zipDialog,'close-job','cancel-job');
-work.worker.progress = {phase:'download',done:1048576,total:4*1048576};
-assert.match(dialogText(render(work.worker,work.p)),/25%/);
+await reportProgress(work.worker,{phase:'download',done:1048576,total:4*1048576});
+checkMeter(render(work.worker,work.p),25,'1.0 MiB / 4.0 MiB');
 await finish();
 render(work.worker,work.p);
 assert.ok(ids.has('keep-both') && ids.has('replace-file') && ids.has('close-job'));
@@ -678,7 +722,17 @@ if (staged) {
 popup=menuAt(files,'file-a.pdf'); click('download');
 const chosenState=JSON.stringify({kind:'destination',directory:'C:/Downloads',filename:'report.pdf'});
 bridgeResult={ok:false,code:'exists',error:'Replace report.pdf?',resume:chosenState};
-work=fileJob(); await finish();
+work=fileJob();
+checkNoMeter(render(work.worker,work.p),/Choose where to save/);
+await reportProgress(work.worker,{done:512,total:0});
+checkNoMeter(render(work.worker,work.p),/512 B/);
+await reportProgress(work.worker,{done:0,total:4096});
+checkMeter(render(work.worker,work.p),0,'0 B / 4.0 KiB');
+await reportProgress(work.worker,{done:4095,total:4096});
+checkMeter(render(work.worker,work.p),99,'4.0 KiB / 4.0 KiB');
+await reportProgress(work.worker,{done:4096,total:4096});
+checkMeter(render(work.worker,work.p),100,'4.0 KiB / 4.0 KiB');
+await finish();
 render(work.worker,work.p);
 assert.ok(ids.has('keep-both') && ids.has('replace-file') && !ids.has('retry-file'));
 bridgeResult={ok:true,path:'C:/Downloads/report (1).pdf'};

@@ -139,7 +139,7 @@ function findFilesPanel(block) {
 actions = adapt(
     read(source / "actions.js"),
     ('/mods/personal-files/', '/data/herdr-mod-kit/helpers/'),
-    ('''  const config = JSON.parse(await readTextFile''', '''  const feature = ["revision","preview","render","image","text"].includes(request.action) ? "pdf" : "transfer";
+    ('''  const config = JSON.parse(await readTextFile''', '''  const feature = ["revision","preview","render","image","text","html-preview","html-open"].includes(request.action) ? "pdf" : "transfer";
   try {
     const config = JSON.parse(await readTextFile'''),
     ('''  const result = await exec''', '''    const result = await exec'''),
@@ -163,7 +163,7 @@ bridge = adapt(
     ("Reinstall the personal-files helper.", "Run the PDF diagnostics."),
     ('    parser=argparse.ArgumentParser()', '    global active_log\n    parser=argparse.ArgumentParser()'),
     ("    unfinished=False\n    try:", """    unfinished=False
-    feature = 'pdf' if action in ('preview', 'render', 'revision', 'image', 'text') else 'transfer'
+    feature = 'pdf' if action in ('preview', 'render', 'revision', 'image', 'text', 'html-preview', 'html-open') else 'transfer'
     active_log = (args.home, feature, action, job)
     if action != 'revision':
         record(args.home, feature, action, 'start', job)
@@ -182,6 +182,7 @@ bridge = adapt(
 )
 write(common / "bridge.py", bridge)
 shutil.copy2(source / "file_host.py",common / "file_host.py")
+shutil.copy2(source / "html_preview.py",common / "html_preview.py")
 
 usage_main = adapt(
     read(work / "lab-usage" / "main.js"),

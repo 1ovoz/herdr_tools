@@ -1,0 +1,14 @@
+* { box-sizing: border-box; }
+body { margin: 0; color: #173b34; background: #fcfbf6; font: 16px/1.5 "Segoe UI", sans-serif; }
+header { background: #185947; padding: 24px 32px 30px; color: #fffcef; border-bottom: 5px solid #e2b352; }
+header p { margin: 0 0 7px; color: #dfecce; }
+h1 { margin: 0; font: 52px/1.04 Georgia, serif; }
+main { padding: 26px 32px; display: grid; grid-template-columns: 1.25fr 1fr; gap: 28px; }
+h2 { margin: 0; font: bold 23px/1.2 Georgia, serif; }
+ul { padding-left: 20px; }
+li::marker { color: #447658; }
+figure { margin: 0; padding: 15px; background: #e9efdf; align-self: start; }
+figcaption { font-weight: 600; margin-bottom: 8px; }
+img { display: block; max-width: 100%; height: auto; }
+.hours { display: flex; justify-content: space-between; color: #44674d; font-size: 13px; }
+@media (max-width: 540px) { main { grid-template-columns: 1fr; gap: 12px; } }

@@ -151,6 +151,7 @@ class RemoteClient:
         if self.on:
             # Whole-file hashes can take longer than a chunk.
             seconds=SLOW_CALL_SECONDS if action in ('stat','digest','finish') else 60
+            if action=='html-resource':seconds=10
             # -I: the host's home folder is the working directory there, and must not supply modules.
             command=[self.hc,'exec','--timeout',str(seconds),'--on',self.on,'-i','python3','-I','-c',REMOTE]
             try:
@@ -876,6 +877,17 @@ def main():
             if q.get('open') and not result.get('cancelled') and not result.get('partial'):open_download(result)
         elif action=='discard':
             discard(client,resume);result={}
+        elif action in ('html-preview','html-open'):
+            import html_preview
+            if action=='html-open':
+                html_preview.open_document(client,q['source'])
+                result={}
+            else:
+                result=html_preview.render(client,q['source'],q.get('width',900),q.get('height',700),root/'html')
+                path=result['image']
+                mark_used(path)
+                prune_cache(path.parent,r'[a-f0-9]{64}\.png',PAGE_CACHE_BYTES,path)
+                result['image']=path.relative_to(args.home).as_posix()
         elif action in ('preview','image'):
             if q.get('on'):
                 # The cached copy is named after the file's revision, so opening it again hashes neither side.

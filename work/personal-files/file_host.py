@@ -252,6 +252,54 @@ def archive_request(q):
 def revision(p):
     s=p.stat()
     return [s.st_size,s.st_mtime_ns,s.st_ino,s.st_dev]
+def html_resource(source, member):
+    # member is relative to the selected HTML file's folder, on the source machine.
+    if source.suffix.lower() not in ('.htm', '.html'):
+        raise ValueError('Select an HTML file.')
+    parts = member.split('/')
+    if (len(member) > 2048 or len(parts) > 32 or
+            any(re.search(WINDOWS_INVALID_LEAF, part) for part in parts)):
+        raise ValueError('Invalid HTML resource path.')
+    with archive_entry(source.parent, 'root/' + member) as (_, name, parent_fd, info):
+        if not stat.S_ISREG(info.st_mode) or archive_link(info):
+            raise ValueError('HTML resources must be regular files.')
+        flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_BINARY', 0)
+        with os.fdopen(os.open(name, flags, dir_fd=parent_fd), 'rb') as stream:
+            before = os.fstat(stream.fileno())
+            if not os.path.samestat(before, info) or not stat.S_ISREG(before.st_mode):
+                raise ValueError('HTML resource changed. Retry.')
+            if before.st_size > CHUNK:
+                raise ValueError('HTML documents and individual assets support up to 4 MiB.')
+            data = stream.read(before.st_size + 1)
+            if len(data) != before.st_size or stage_identity(os.fstat(stream.fileno())) != stage_identity(before):
+                raise ValueError('HTML resource changed. Retry.')
+    return dict(data=base64.b64encode(data).decode('ascii'),
+                revision=[before.st_size, before.st_mtime_ns, before.st_ino, before.st_dev])
+
+
+def html_text(path):
+    with path.open('rb') as raw:
+        head = raw.read(1024)
+        encoding = 'utf-8-sig'
+        if head.startswith((b'\xff\xfe', b'\xfe\xff')):
+            encoding = 'utf-16'
+        elif not head.startswith(b'\xef\xbb\xbf'):
+            match = re.search(rb"""<meta\b[^>]*?charset\s*=\s*['"]?([a-zA-Z0-9_-]+)""", head, re.I)
+            if match:
+                import codecs
+                label = match[1].decode('ascii').lower()
+                try:
+                    codec = codecs.lookup({'euc-kr': 'cp949', 'ks_c_5601-1987': 'cp949'}.get(label, label))
+                    if getattr(codec, '_is_text_encoding', False):
+                        encoding = codec.name
+                except LookupError:
+                    pass
+        import io
+        raw.seek(0)
+        with io.TextIOWrapper(raw, encoding=encoding, errors='replace') as text:
+            return text.read(400001)
+
+
 def digest(p):
     h=hashlib.sha256()
     with p.open('rb') as f:
@@ -398,11 +446,15 @@ def go(q):
         return create_item(p,q['name'],a)
     if a in ('copy','move','rename','delete'):
         return edit_file(q,p)
+    if a=='html-resource':return html_resource(p,q['member'])
     if a=='text':
         before=revision(p)
         if not p.is_file():raise ValueError('Select an individual file')
-        with p.open(encoding='utf-8-sig') as stream:
-            text=stream.read(400001)
+        if p.suffix.lower() in ('.htm', '.html'):
+            text = html_text(p)
+        else:
+            with p.open(encoding='utf-8-sig') as stream:
+                text=stream.read(400001)
         if before!=revision(p):raise ValueError('The file changed while opening. Retry.')
         return dict(text=None if '\0' in text else text,revision=before)
     if a=='revision':

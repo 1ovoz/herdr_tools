@@ -23,3 +23,5 @@ Windows x64 v1.8.0 adds folder ZIP downloads and creation of files and folders f
 Windows x64 v1.9.0 adds a two-row Files toolbar with icon actions and a selection caption. HTML and HTM open in the native rich-text preview with a Source toggle. The Windows 0.1.18 desktop checks cover the installed toolbar, HTML preview, and a v1.8.0 upgrade and reinstall.
 
 Windows x64 v1.9.1 adds replace and numbered-copy choices to file and folder ZIP downloads and closes the native Save As picker on cancellation. Increment the patch number for each subsequent release as requested.
+
+Windows x64 v1.9.2 shows transfer progress bars and renders local and remote HTML documents with Microsoft Edge.

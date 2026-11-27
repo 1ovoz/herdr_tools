@@ -16,7 +16,7 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parent
-VERSION = '1.9.1'
+VERSION = '1.9.2'
 FEATURES = ('usage', 'transfer', 'pdf', 'tabs')
 MODS = {'usage':'herdr-kit-usage', 'transfer':'herdr-kit-files', 'pdf':'herdr-kit-pdf', 'tabs':'herdr-kit-pane'}
 TABS_MOD = 'herdr-kit-tabs'
@@ -275,7 +275,9 @@ def helper_files(features):
     if not features:
         return ()
     common = ('kit_log.py', 'runtime.json')
-    return (*common, 'bridge.py', 'file_host.py') if 'pdf' in features or 'transfer' in features else common
+    if 'pdf' in features or 'transfer' in features:
+        common += ('bridge.py', 'file_host.py')
+    return (*common, 'html_preview.py') if 'pdf' in features else common
 
 
 def copy_atomic(source, target, before_replace=None, created_dirs=None):

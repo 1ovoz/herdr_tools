@@ -15,7 +15,7 @@ outputs=parser.parse_args().out_dir
 outputs.mkdir(parents=True,exist_ok=True)
 root_files=['kit.py','Install-Windows.cmd','Diagnose-Windows.cmd','README.md','AGENT_INSTALL.md',
             'licenses/Herdr-Apache-2.0.txt','common/actions.js','common/document-drag.js',
-            'common/document-flow.js','common/bridge.py','common/file_host.py','common/kit_log.py','common/default-windows-keys.json']
+            'common/document-flow.js','common/bridge.py','common/file_host.py','common/html_preview.py','common/kit_log.py','common/default-windows-keys.json']
 manifests={
     'herdr-kit-version': ['mod.json','main.js'],
     'herdr-kit-usage': ['mod.json','main.js','collect.py','codex.svg'],

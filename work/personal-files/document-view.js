@@ -127,6 +127,7 @@ export class DocumentView extends View {
     this.viewerPane = p.pane;
     this.viewerTab = p.tab;
     this.isPicture=/\.(?:png|jpe?g)$/i.test(p.source || "");
+    this.isHtml=/\.html?$/i.test(p.source || "");
     this.width = 850;
     this.height = 720;
     this.zoom = p.position?.zoom ?? 1;
@@ -168,14 +169,21 @@ export class DocumentView extends View {
       const previousWarning=this.documentWarning;
       let refreshed=false;
       try {
-        if (this.revision) {
+        if (this.revision || this.isHtml) {
           const revision = (await this.request("revision")).revision.join(":");
-          if (revision === this.revision) {
+          const unchanged=revision===this.revision;
+          // The browser can still display a file when its source cannot be read as text.
+          if (this.isHtml && !unchanged) {
+            this.revision=revision;
+            this.queueHtmlPreview(task);
+          }
+          if (unchanged && !(this.isHtml && this.documentWarning)) {
             this.pollDelay=Math.min(16000,(this.pollDelay || POLL_MS)*2);
             this.documentWarning = null;
             // The file is unchanged, but cached bitmaps expire while a tab is away: ask again for what is shown.
             if (this.document.mode === "pdf") this.queuePages(task);
             else if (this.isPicture && afterIdle) { this.picture=await this.request("image"); refreshed=true; }
+            else if (this.isHtml && afterIdle) { this.htmlAttemptKey=null; this.queueHtmlPreview(task); }
             return;
           }
         }
@@ -200,7 +208,14 @@ export class DocumentView extends View {
   }
 
   async readText() {
-    const {text,revision,html}=await this.request("text");
+    const {text,revision,html}=await this.request("text").catch(error=>{
+      if (this.isHtml) {
+        this.code?.release();
+        this.code=null;
+        this.html=null;
+      }
+      throw error;
+    });
     this.html = html ?? null;
     this.revision=revision.join(":");
     if (text === null || text.includes("\0")) {
@@ -220,6 +235,83 @@ export class DocumentView extends View {
     this.code?.release();
     this.code = next;
     this.textStatus = null;
+  }
+
+  htmlViewport() {
+    if (!this.htmlSize || !this.htmlSize.width || !this.htmlSize.height) return null;
+    const zoom=Number(settings().zoom) || 1;
+    const width=Math.max(1,Math.round(this.htmlSize.width/zoom));
+    const height=Math.max(1,Math.round(this.htmlSize.height/zoom));
+    return {width,height,key:[width,height,this.revision].join("/")};
+  }
+
+  queueHtmlPreview(cx) {
+    const viewport=this.htmlViewport();
+    if (!viewport || this.showSource || this.htmlCapturing) return;
+    const {width,height,key}=viewport;
+    if (key===this.htmlTimerKey) return;
+    this.htmlTimer?.cancel();
+    this.htmlTimer=null;
+    this.htmlTimerKey=null;
+    if (key===this.htmlAttemptKey) return;
+    this.htmlTimerKey=key;
+    this.htmlTimer=cx.timer.after(220,tick=>{
+      this.htmlTimerKey=null;
+      this.htmlTimer=null;
+      if (this.showSource || !this.isShown() || this.htmlViewport()?.key!==key) return;
+      this.htmlAttemptKey=key;
+      this.htmlCapturing=true;
+      tick.spawn(async task=>{
+        try {
+          const frame=await this.request("html-preview",{width,height});
+          const latest=this.htmlViewport();
+          // Source may finish loading during the capture. Accept a matching revision and layout only.
+          if (latest?.width===width && latest.height===height &&
+              (!this.revision || frame.revision.join(":")===this.revision)) {
+            this.htmlFrame=frame;
+            this.htmlError=null;
+            this.htmlAttemptKey=latest.key;
+          }
+        } catch (error) {
+          if (this.htmlViewport()?.key===key) {
+            this.htmlError=String(error).replace(/^Error:\s*/,"");
+            this.htmlFrame=null;
+          }
+        } finally {
+          this.htmlCapturing=false;
+          task.notify();
+        }
+      });
+    });
+  }
+
+  openHtml(cx) {
+    if (this.openingHtml) return;
+    this.openingHtml=true;
+    cx.spawn(async task=>{
+      try { await this.request("html-open"); }
+      catch (error) { notify({title:"Could not open HTML in browser",body:String(error),level:"warning"}); }
+      finally { this.openingHtml=false; task.notify(); }
+    });
+  }
+
+  htmlPreview(cx,t) {
+    this.queueHtmlPreview(cx);
+    const body=v_flex().id("html-preview").flex_1().min_h(0).w_full().overflow_y_scrollbar()
+      .on_size_change((size,task)=>{
+        this.htmlSize=size;
+        this.queueHtmlPreview(task);
+      });
+    const frame=this.htmlFrame;
+    if (frame) {
+      const width=this.htmlViewport()?.width || frame.width;
+      return body.child(image(frame.image).w(width).h(width*frame.height/frame.width).flex_none())
+        .when(frame.truncated,el=>el.child(div().p(8).text_color(t.muted).child("Open in browser to see the rest of this page.")));
+    }
+    if (!this.htmlError) return body.child(div().p(12).text_color(t.muted).child("Rendering HTML preview…"));
+    return body.px(18).py(12).gap(8)
+      .child(div().text_color(t.muted).child("Browser preview unavailable. "+this.htmlError))
+      .when(Boolean(this.html),el=>el.child(TextView.html("html-body",this.html).selectable(true).scrollable(false).w_full()));
   }
 
   flow() {
@@ -491,7 +583,7 @@ export class DocumentView extends View {
     const t=theme(), {source,on,mode}=this.document;
     const isPdf=mode==="pdf", caption=source?.split(/[\\/]/).pop()||"Document";
     const g=this.flow(), index=pageAt(g,this.scroll.y+1), data=this.pages.get(index);
-    const hasHtml = this.html != null;
+    const hasHtml = this.isHtml;
     const hasPreview = hasHtml || Boolean(this.markdown);
     const compact=g.viewportWidth<320;
     const narrow=g.viewportWidth<205;
@@ -508,14 +600,16 @@ export class DocumentView extends View {
       .child(h_flex().h(42).flex_none().px(10).gap(5).items_center().bg(t.chrome)
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(caption))
         .when(hasPreview,el=>el.child(this.button(hasHtml?"html-toggle":"markdown-toggle",this.showSource?"Preview":"Source",cx=>{
-          this.showSource=!this.showSource;cx.notify();
+          this.showSource=!this.showSource;
+          if (!this.showSource && this.htmlError) this.htmlAttemptKey=null;
+          cx.notify();
         })))
+        .when(hasHtml,el=>el.child(this.button("html-open",compact?"Browser":"Open in browser",cx=>this.openHtml(cx))
+          .flex_none().tooltip("Open in browser")))
         .when(!compact,el=>el.child(this.button("document-download","Download",()=>this.job([{action:"download",source,on,job:jobId()}]),!source)))
         .when(isPdf && !compact,el=>el.child(this.button("pdf-copy","Copy text",cx=>this.copyDocumentText(cx),!this.selection)))
         )
-      .when(hasHtml && !this.showSource,el=>el.child(v_flex().id("html-preview").flex_1().min_h(0)
-        .overflow_y_scrollbar().px(18).py(12)
-        .child(TextView.html("html-body",this.html).selectable(true).scrollable(false).w_full())))
+      .when(hasHtml && !this.showSource,el=>el.child(this.htmlPreview(cx,t)))
       .when(!isPdf && this.markdown && !this.showSource,el=>el.child(v_flex().id("markdown-preview").flex_1().min_h(0)
         .overflow_y_scrollbar().px(18).py(12).gap(8).children(this.markdown.map((block,i)=>
           TextView.markdown("markdown-block-"+i,block).selectable(true).scrollable(false).w_full()

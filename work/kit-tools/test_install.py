@@ -14,6 +14,12 @@ sys.path.insert(0, str(work / 'herdr-mod-kit'))
 import kit
 
 
+class HtmlPreviewInstallation(unittest.TestCase):
+    def test_browser_helper_follows_document_viewer(self):
+        self.assertIn('html_preview.py', kit.helper_files(('pdf',)))
+        self.assertNotIn('html_preview.py', kit.helper_files(('transfer',)))
+
+
 class Reinstall(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack()

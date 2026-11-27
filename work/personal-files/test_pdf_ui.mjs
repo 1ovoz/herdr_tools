@@ -24,39 +24,123 @@ const appZoom = 1.25;
 const blocks=vm.runInNewContext(source+'\nmarkdownBlocks',{View:class{}});
 assert.deepEqual([...blocks('# title\n\n![alt](pic.png)\n<img src=x>')],['# title\n\n&#33;[alt](pic.png)\n&lt;img src=x>']);
 assert.deepEqual([...blocks('~~~js\nconst x="<img>";\n~~~')],['~~~js\nconst x="<img>";\n~~~']);
-// Exercise the installed document view through the same bridge response as a local or remote HTM.
+// Drive the HTML tab through its layout callback, capture, revision poll and toolbar.
 {
-  let reply={text:'<h1>Hello</h1>',html:'<h1>Hello</h1>',revision:['1']};
-  const rendered=[], buttons=new Map();
-  const element=()=>new Proxy({}, {get: (_,key)=>key==='when' ? (test,fn)=>{
-    const el=element(); if(test) fn(el); return el;
-  } : ()=>element()});
-  const Viewer=vm.runInNewContext(source+'\nDocumentView',{
-    View:class {},theme:()=>({}),settings:()=>({}), pageAt,pageFlow, v_flex:element,h_flex:element,div:element,
-    EditorState:{new:opts=>({...opts,release(){}})}, Editor:{new:code=>{rendered.push(code.value);return element();}},
-    TextView:{html:(_id,html)=>{rendered.push(html);return element();}}
+  let revision='1', clock=1_000_000, textError=false;
+  const requests=[], timers=new Set(), jobs=new Set(), captures=[];
+  const node=(kind, value)=>{
+    const data={kind,value,children:[],calls:{}};
+    const el=new Proxy(data,{get(target,key) {
+      if (key in target) return target[key];
+      return (...args)=>{
+        if (key==='when') { if (args[0]) args[1](el); }
+        else if (key==='child') data.children.push(args[0]);
+        else data.calls[key]=args;
+        return el;
+      };
+    }});
+    return el;
+  };
+  const walk=(el,predicate)=>{
+    if (!el || typeof el!=='object') return;
+    if (predicate(el)) return el;
+    for (const child of el.children) { const found=walk(child,predicate); if(found) return found; }
+  };
+  const byId=(tree,id)=>walk(tree,el=>el.calls.id?.[0]===id);
+  const byKind=(tree,kind)=>walk(tree,el=>el.kind===kind);
+  const bridge=async q=>{
+    requests.push(q);
+    switch(q.action) {
+      case 'revision': return {ok:true,revision:[revision]};
+      case 'text':
+        if (textError) throw Error('Cannot decode text');
+        return {ok:true,revision:[revision],text:'<h1 class="hero">'+revision+'</h1>',html:'<h1>'+revision+'</h1>'};
+      case 'html-preview': return new Promise(resolve=>captures.push(resolve));
+      case 'html-open': return {ok:true};
+      default: throw Error('Unexpected request '+q.action);
+    }
+  };
+  const Viewer=vm.runInNewContext(source+'\nGroupPage',{
+    View:class {}, checking:()=>false, focused:()=>({tab:'work'}),groupState:()=>({active:'doc'}),
+    theme:()=>({}),settings:()=>({zoom:1.25}),jobId:()=>'job',bridge,pageAt,pageFlow,
+    Date:{now:()=>clock},v_flex:()=>node('column'),h_flex:()=>node('row'),div:()=>node('div'),
+    image:path=>node('image',path),EditorState:{new:opts=>({...opts,release(){}})},
+    Editor:{new:code=>node('editor',code.value)},TextView:{html:(_id,html)=>node('text',html)}
   });
+  const cx={timer:{
+    after(_delay,fn) { const timer={fn,cancel(){ timers.delete(timer); }}; timers.add(timer); return timer; },
+    every(_delay,fn) { cx.poll=fn; }
+  },spawn(fn) { const job=fn(cx); jobs.add(job); job.finally(()=>jobs.delete(job)); },
+    notify(){},focus_handle(){return {};}};
+  const runTimers=()=>{for(const timer of [...timers]){timer.cancel();timer.fn(cx);}};
   const doc=new Viewer();
-  Object.assign(doc,{document:{source:'/reports/보고서.HTM',on:'lab',mode:'document'},width:600,height:400,
-    sizes:[],scroll:{x:0,y:0},pages:new Map(),zoom:1,request:async()=>reply,
-    button:(id,label,fn)=>{buttons.set(id,{label,fn});return element();}});
-  await doc.readText();
+  doc.initPage({id:'doc',groupId:'group',tab:'work',source:'/reports/보고서.HTM',on:'lab',mode:'document'},cx);
+  const render=()=>doc.renderPage(cx);
+  const resize=(width,height)=>byId(render(),'html-preview').calls.on_size_change[0]({width,height},cx);
+  const click=id=>byId(render(),id).calls.on_click[0]({},cx);
+  const captureCount=()=>requests.filter(q=>q.action==='html-preview').length;
+  const png=(name,width,height,rev=revision,extra={})=>({ok:true,image:'data/files/'+name+'.png',width,height,revision:[rev],...extra});
+  const finish=async reply=>{captures.shift()(reply);await Promise.all([...jobs]);};
+  await Promise.all([...jobs]);
   assert.equal(doc.code.language,'html');
-  doc.renderPage({});
-  assert.equal(buttons.get('html-toggle').label,'Source');
-  buttons.get('html-toggle').fn({notify(){}});
-  reply={text:'<h1 class="new">Updated</h1>',html:'<h1>Updated</h1>',revision:['2']};
-  await doc.readText();
-  doc.renderPage({});
-  assert.deepEqual(rendered,[ '<h1>Hello</h1>',reply.text ]);
-  assert.equal(buttons.get('html-toggle').label,'Preview');
-  buttons.get('html-toggle').fn({notify(){}});
-  doc.renderPage({});
-  assert.equal(rendered.at(-1),reply.html);
-  reply={text:null,revision:['3']};
-  await doc.readText();
-  assert.equal(doc.html,null);
-  assert.equal(doc.code,null);
+  assert.equal(requests.some(q=>q.action==='html-open'),false);
+  assert.ok(byId(render(),'html-open'),'HTML tabs have an explicit browser action');
+  resize(875,500); resize(750,450);
+  runTimers();
+  assert.equal(captureCount(),1,'Dragging the divider coalesces viewport measurements');
+  const first=requests.find(q=>q.action==='html-preview');
+  assert.deepEqual([first.source,first.on,first.width,first.height],['/reports/보고서.HTM','lab',600,360]);
+  await finish(png('wide',600,1200));
+  const image=byKind(render(),'image');
+  assert.equal(image.value,'data/files/wide.png');
+  assert.deepEqual([image.calls.w[0],image.calls.h[0]],[600,1200]);
+  assert.ok(image.calls.flex_none && byId(render(),'html-preview').calls.overflow_y_scrollbar,
+    'A tall page retains its aspect ratio and scrolls inside the tab');
+  resize(650,450); runTimers();
+  assert.equal(captureCount(),2);
+  resize(500,450); runTimers();
+  assert.equal(captureCount(),2,'Only one Edge capture runs at a time in this tab');
+  assert.equal(byKind(render(),'image').value,'data/files/wide.png','The last good frame stays visible during resize');
+  await finish(png('intermediate',520,400));
+  assert.equal(byKind(render(),'image').value,'data/files/wide.png','A superseded layout never replaces the good frame');
+  runTimers();
+  assert.equal(captureCount(),3);
+  await finish(png('narrow',400,1080));
+  assert.equal(byKind(render(),'image').value,'data/files/narrow.png');
+  for(let n=0;n<10;n++) { render(); runTimers(); }
+  assert.equal(captureCount(),3,'An unchanged frame causes no extra captures');
+  click('html-toggle');
+  assert.equal(byKind(render(),'editor').value,'<h1 class="hero">1</h1>');
+  revision='2'; clock+=20000; cx.poll(cx); await Promise.all([...jobs]); render(); runTimers();
+  assert.equal(captureCount(),3);
+  assert.equal(byKind(render(),'editor').value,'<h1 class="hero">2</h1>','Save updates Source while preview is hidden');
+  click('html-toggle'); render(); resize(500,450); runTimers();
+  assert.equal(captureCount(),4,'Returning to Preview picks up a save without another resize');
+  await finish(png('saved',400,600));
+  assert.equal(byKind(render(),'image').value,'data/files/saved.png');
+  revision='3'; clock+=20000; cx.poll(cx); await Promise.all([...jobs]); render(); runTimers();
+  assert.equal(captureCount(),5,'A visible preview refreshes on save at a fixed width');
+  await finish({ok:false,error:'Edge unavailable'});
+  assert.equal(byKind(render(),'text').value,'<h1>3</h1>','A failed browser render falls back to current readable HTML');
+  for(let n=0;n<10;n++) { render(); runTimers(); }
+  assert.equal(captureCount(),5,'A failed capture waits for a change or explicit retry');
+  assert.equal(requests.some(q=>q.action==='html-open'),false);
+  click('html-open'); await Promise.all([...jobs]);
+  const opened=requests.filter(q=>q.action==='html-open');
+  assert.deepEqual(opened.map(q=>[q.source,q.on]),[['/reports/보고서.HTM','lab']]);
+  textError=true;
+  revision='4'; clock+=20000; cx.poll(cx); await Promise.all([...jobs]); render(); runTimers();
+  assert.equal(captureCount(),6,'Source decoding failure does not prevent a browser capture of the saved bytes');
+  await finish(png('old',400,540,'3'));
+  assert.equal(byKind(render(),'image'),undefined,'A bitmap from before the save cannot replace the current preview');
+  revision='5'; clock+=20000; cx.poll(cx); await Promise.all([...jobs]); render(); runTimers();
+  assert.equal(captureCount(),7);
+  await finish(png('browser-decoded',400,4000,'5',{truncated:true}));
+  const clipped=render();
+  assert.equal(byKind(clipped,'image').value,'data/files/browser-decoded.png');
+  assert.ok(walk(clipped,el=>el.children.some(child=>typeof child==='string' && /rest of this page/i.test(child))),
+    'A clipped page explains how to read past the bitmap limit');
+  console.log('HTML viewport capture, save refresh, Source, browser action and readable fallback passed');
 }
 const DocumentView = vm.runInNewContext(source + '\nDocumentView', {
   View: class {}, settings: () => ({zoom: appZoom}), pageAt, pageFlow, restorePosition
